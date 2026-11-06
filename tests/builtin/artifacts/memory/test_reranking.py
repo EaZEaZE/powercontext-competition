@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
+import pytest
+
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.memory import (
     LLMMemoryReranker,
@@ -26,6 +29,7 @@ from powercontext.builtin.artifacts.memory import (
     MemoryRerankInput,
     MemoryRerankOutput,
 )
+from powercontext.builtin.artifacts.memory.http_reranker import HTTPMemoryReranker
 from powercontext.builtin.inference import GenerationResult, InferenceUsage
 
 
@@ -85,5 +89,42 @@ def test_llm_reranker_falls_back_to_coarse_order_when_no_rank_is_valid() -> None
         assert decision.selected_ranks == (1, 2)
         assert decision.discarded_rank_count == 3
         assert decision.used_fallback is True
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"not JSON",
+        b'{"scores":[{"rank":true,"score":1}]}',
+        b'{"scores":[{"rank":1,"score":true}]}',
+        b'{"scores":[{"rank":1,"score":"1"}]}',
+        b'{"scores":[{"rank":1,"score":1,"score":2}]}',
+    ],
+)
+def test_http_reranker_rejects_malformed_or_coercible_scores(content: bytes) -> None:
+    async def scenario() -> None:
+        transport = httpx.MockTransport(lambda _request: httpx.Response(200, content=content))
+        async with httpx.AsyncClient(transport=transport) as client:
+            reranker = HTTPMemoryReranker("https://reranker.invalid/score", client=client)
+            with pytest.raises(ValueError):
+                await reranker.rerank("query", (_hit(1),), 1)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status", [307, 503])
+def test_http_reranker_preserves_non_success_status(status: int) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/score"
+        return httpx.Response(status, headers={"Location": "/other"}, content=b"not JSON")
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True) as client:
+            reranker = HTTPMemoryReranker("https://reranker.invalid/score", client=client)
+            with pytest.raises(httpx.HTTPStatusError) as error:
+                await reranker.rerank("query", (_hit(1),), 1)
+            assert error.value.response.status_code == status
 
     asyncio.run(scenario())
