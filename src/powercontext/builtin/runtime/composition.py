@@ -83,10 +83,7 @@ from powercontext.builtin.inference.usage import (
 from powercontext.builtin.persistence.dream_schema import ensure_dream_schema
 from powercontext.builtin.persistence.memory_index import CompositeMemoryIndex, MemoryIndex
 from powercontext.builtin.persistence.oceanbase.experience_index import OceanBaseExperienceFTSIndex
-from powercontext.builtin.persistence.oceanbase.memory_index import (
-    OceanBaseMemoryFTSIndex,
-    OceanBaseMemoryVectorIndex,
-)
+from powercontext.builtin.persistence.oceanbase.memory_index import oceanbase_memory_index
 from powercontext.builtin.persistence.oceanbase.profile import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.oceanbase.topic_memory_index import (
     OceanBaseTopicMemoryFTSIndex,
@@ -966,10 +963,10 @@ async def open_builtin_contexts(
                 await contexts.aclose_usage_recorder()
         return
     experience_index = OceanBaseExperienceFTSIndex()
-    indexes = [OceanBaseMemoryFTSIndex()]
-    if embedding_model is not None:
-        indexes.append(OceanBaseMemoryVectorIndex(embedding_model.profile))
-    index = CompositeMemoryIndex(*indexes)
+    index = oceanbase_memory_index(
+        None if embedding_model is None else embedding_model.profile,
+        native_hybrid=isinstance(database, SeekDBConfig),
+    )
     topic_indexes: list[TopicMemoryIndex] = [OceanBaseTopicMemoryFTSIndex()]
     if embedding_model is not None:
         topic_indexes.append(OceanBaseTopicMemoryVectorIndex(embedding_model.profile))
