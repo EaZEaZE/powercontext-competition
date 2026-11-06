@@ -33,6 +33,7 @@ from powercontext.builtin.runtime import (
     open_builtin_contexts,
     open_builtin_runtime,
 )
+from powercontext.builtin.runtime.context_pack import ContextPack, ContextPackDelta, apply_context_pack_delta
 from powercontext.builtin.scope import ScopeDraft, ScopeMutation, ScopeNotFoundError
 from powercontext.builtin.sources import CONTENT_SOURCE_DEFINITION, ContentCapture, ContentSource
 from powercontext.sources import ConnectorBinding, SourceDefinitionRegistry, project_source_for_transport
@@ -159,6 +160,42 @@ def test_builtin_runtime_uses_sqlite_fts_without_vector_extension(tmp_path, monk
             assert no_memory.content is None
             assert no_match.status == "empty"
             assert no_match.content is None
+
+    asyncio.run(scenario())
+
+
+def test_incremental_context_replays_empty_results_and_later_matches() -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(BuiltinConfig()) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Context replay", summary="Empty search transition", idempotency_key="context-replay")
+            )
+            await runtime.memory.for_scope(scope.scope_id).remember(
+                RememberMemoryRequest(entries=(MemoryEntryInput(kind="fact", text="Calibrate the ocean sensor."),))
+            )
+            context = runtime.context.for_scope(scope.scope_id)
+            matched = PrepareContextRequest(query="sensor")
+            unmatched = PrepareContextRequest(query="quasar")
+
+            first_empty = await context.prepare_incremental(unmatched)
+            assert isinstance(first_empty, ContextPack)
+            assert ContextPack.from_bytes(first_empty.to_bytes()).items == ()
+
+            full = await context.prepare_incremental(matched)
+            assert isinstance(full, ContextPack)
+            full = ContextPack.from_bytes(full.to_bytes())
+            clear = await context.prepare_incremental(unmatched, base_pack=full)
+            assert isinstance(clear, ContextPackDelta)
+            empty = apply_context_pack_delta(full, ContextPackDelta.from_bytes(clear.to_bytes()))
+            assert empty == first_empty
+
+            restore = await context.prepare_incremental(matched, base_pack=empty)
+            assert isinstance(restore, ContextPackDelta)
+            restored = apply_context_pack_delta(empty, ContextPackDelta.from_bytes(restore.to_bytes()))
+            expected = await context.prepare(matched)
+            assert expected.content
+            assert b"".join(restored.items) == expected.content.encode("utf-8")
 
     asyncio.run(scenario())
 
