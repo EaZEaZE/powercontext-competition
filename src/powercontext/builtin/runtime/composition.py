@@ -628,6 +628,7 @@ async def open_builtin_runtime(
                 skill_usage_recorder=contexts.record_skill_usage,
                 experience_incubator=contexts.incubate_experience if contexts.experience_incubation else None,
                 topic_memory_search=contexts.search_topic_memories,
+                source_lifecycle_transactions=contexts.source_lifecycle_transaction,
                 topic_memory_get=contexts.get_topic_memory,
                 topic_memory_browse=contexts.browse_topic_memories,
                 topic_memory_flush=contexts.request_topic_memory_flush,

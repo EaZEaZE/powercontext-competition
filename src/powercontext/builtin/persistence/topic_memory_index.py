@@ -33,7 +33,35 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicMemorySearchRequest,
     TopicMemoryStorageInvariantError,
 )
-from powercontext.builtin.persistence.tables import TOPIC_MEMORY_ACTIVE_CHUNKS_TABLE, TOPIC_MEMORY_ACTIVE_TOPICS_TABLE
+from powercontext.builtin.persistence.tables import (
+    SOURCE_LIFECYCLE_WITHDRAWN_TOPICS_TABLE,
+    TOPIC_MEMORY_ACTIVE_CHUNKS_TABLE,
+    TOPIC_MEMORY_ACTIVE_TOPICS_TABLE,
+)
+
+
+def topic_lifecycle_predicate(topics: Table, /) -> ColumnElement[bool]:
+    withdrawn = SOURCE_LIFECYCLE_WITHDRAWN_TOPICS_TABLE
+    return (
+        ~select(withdrawn.c.artifact_id)
+        .where(
+            withdrawn.c.scope_id == topics.c.scope_id,
+            withdrawn.c.artifact_id == topics.c.artifact_id,
+            withdrawn.c.revision == topics.c.revision,
+        )
+        .correlate(topics)
+        .exists()
+    )
+
+
+def topic_lifecycle_sql(topic_alias: str, /) -> str:
+    """Filter an exact Topic revision in a statically defined index query."""
+    return (
+        f"NOT EXISTS (SELECT 1 FROM {SOURCE_LIFECYCLE_WITHDRAWN_TOPICS_TABLE.name} AS withdrawn "  # noqa: S608
+        f"WHERE withdrawn.scope_id = {topic_alias}.scope_id "
+        f"AND withdrawn.artifact_id = {topic_alias}.artifact_id "
+        f"AND withdrawn.revision = {topic_alias}.revision)"
+    )
 
 
 class TopicMemoryIndex(Protocol):
