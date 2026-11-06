@@ -34,18 +34,17 @@ from powercontext.builtin.runtime.prepared_code import (
     PreparedCodeCandidate,
     assemble_code,
 )
+from powercontext.builtin.runtime.prepared_evidence import PreparedMemoryFragment, select_memory_evidence
 from powercontext.builtin.runtime.prepared_text import (
-    TRUST_POLICY,
     ContextTextItem,
     fit_context_text_item,
+    render_context_envelope,
     render_context_text,
 )
 from powercontext.builtin.runtime.recall_sufficiency import RecallBudgetView
 
 _MIN_TRUNCATED_CONTENT_BYTES = 64
 _ELLIPSIS = "…"
-_BEGIN_MARKER = "BEGIN_POWERCONTEXT_PREPARED_CONTEXT_V1"
-_END_MARKER = "END_POWERCONTEXT_PREPARED_CONTEXT_V1"
 _Item = TypeVar("_Item")
 
 
@@ -106,6 +105,7 @@ class PreparedContextBuild:
     origins: tuple[PreparedContextOrigin, ...]
     omissions: PreparedContextOmissions = PreparedContextOmissions()
     code_origins: tuple[CodeEvidenceRef, ...] = ()
+    fragments: tuple[PreparedMemoryFragment, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -211,7 +211,7 @@ class PreparedContextBuilder:
         profile_candidates: Sequence[PreparedProfileCandidate] = (),
         code_candidates: Sequence[PreparedCodeCandidate] = (),
     ) -> PreparedContextBuild:
-        if request.include_code:
+        if request.include_code and not request.evidence_selection:
 
             def historical(history_request: PrepareContextRequest, entries: int) -> PreparedContextBuild:
                 builder = PreparedContextBuilder()
@@ -230,6 +230,8 @@ class PreparedContextBuilder:
 
         if sum(len(candidates.hits) for candidates in memory_candidates) > self.memory_candidate_limit:
             raise PreparedContextInvariantError("memory-candidate-limit")
+        if request.evidence_selection:
+            return self._select_evidence(request, memory_candidates)
         if len(topic_memory_hits) > self.topic_memory_candidate_limit:
             raise PreparedContextInvariantError("topic-memory-candidate-limit")
         if sum(len(candidates.hits) for candidates in experience_candidates) > self.experience_candidate_limit:
@@ -273,25 +275,65 @@ class PreparedContextBuilder:
         the gate tell budget-limited thinness from recall-limited thinness.
 
         Pure and side-effect free: no I/O, no persistence, nothing reported to any sink, and
-        the same inputs as :meth:`build_scopes_result` are guaranteed to yield the same
-        counters because both go through :meth:`_select_entries`.
+        the same inputs as :meth:`build_scopes_result` use the same historical selection path.
         """
 
-        content, origins, omissions = self._select_entries(
-            request=request,
-            current_scope_id=current_scope_id,
-            memory_candidates=memory_candidates,
-            experience_candidates=experience_candidates,
-            profile_candidates=profile_candidates,
-            topic_memory_hits=topic_memory_hits,
-        )
-        content_bytes = 0 if content is None else len(content.encode("utf-8"))
+        if request.evidence_selection:
+            build = self._select_evidence(request, memory_candidates)
+            origins, omissions, content_bytes = build.origins, build.omissions, build.context.content_bytes
+        else:
+            content, origins, omissions = self._select_entries(
+                request=request,
+                current_scope_id=current_scope_id,
+                memory_candidates=memory_candidates,
+                experience_candidates=experience_candidates,
+                profile_candidates=profile_candidates,
+                topic_memory_hits=topic_memory_hits,
+            )
+            content_bytes = 0 if content is None else len(content.encode("utf-8"))
         return RecallBudgetView(
             max_bytes=request.max_bytes,
             delivered_items=len(origins),
             truncated_items=omissions.truncated_items,
             dropped_items=omissions.dropped_items,
             unused_bytes=max(0, request.max_bytes - content_bytes),
+        )
+
+    def _select_evidence(
+        self, request: PrepareContextRequest, memory_candidates: Sequence[PreparedMemoryCandidates]
+    ) -> PreparedContextBuild:
+        entries: list[tuple[MemoryEntryAddress, str]] = []
+        seen: set[tuple[str, str, str, int, str, str]] = set()
+        for group in memory_candidates:
+            # A hit without a scope cannot produce an exact evidence address.
+            if not group.scope_id:
+                continue
+            for entry in self._memory_entries(group.memory_ref, group.hits, scope_id=group.scope_id):
+                address = entry.origin
+                if not isinstance(address, MemoryEntryAddress):
+                    raise PreparedContextInvariantError("evidence-scope-missing")
+                artifact = address.memory.artifact
+                identity = (
+                    address.memory.scope_id,
+                    artifact.family,
+                    artifact.artifact_id,
+                    artifact.revision,
+                    address.entry_id,
+                    address.entry_version_id,
+                )
+                if identity not in seen:
+                    seen.add(identity)
+                    entries.append((address, entry.content))
+        content, fragments, dropped = select_memory_evidence(
+            request.query, entries, request.max_bytes, self.entry_limit
+        )
+        return PreparedContextBuild(
+            context=self.empty()
+            if content is None
+            else PreparedContext(status="ready", content=content, content_bytes=len(content.encode("utf-8"))),
+            origins=tuple(fragment.address for fragment in fragments),
+            fragments=fragments,
+            omissions=PreparedContextOmissions(dropped_items=dropped, dropped_no_fitting_truncation=dropped),
         )
 
     def _select_entries(
@@ -686,12 +728,7 @@ def _interleave_groups(groups: Sequence[Sequence[_Item]]) -> tuple[_Item, ...]:
 
 
 def _render(entries: Sequence[_PreparedContextEntry]) -> str:
-    envelope = {
-        "trust": "untrusted_history",
-        "items": [_render_entry(entry) for entry in entries],
-    }
-    encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
-    return "\n\n".join((TRUST_POLICY, f"{_BEGIN_MARKER}\n{encoded}\n{_END_MARKER}"))
+    return render_context_envelope([_render_entry(entry) for entry in entries])
 
 
 def _text_item(entry: _PreparedContextEntry) -> ContextTextItem:

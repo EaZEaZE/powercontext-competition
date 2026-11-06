@@ -19,6 +19,7 @@ import json
 
 import pytest
 
+from powercontext.artifacts import MemoryCitation
 from powercontext.builtin.artifacts.memory import MemoryCandidateRequest, MemoryEntryInput, MemoryRerankDecision
 from powercontext.builtin.inference import InferenceUsage
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
@@ -26,6 +27,8 @@ from powercontext.builtin.runtime import (
     BuiltinConfig,
     CaptureSource,
     CommitConnectorCheckpoint,
+    ContextAssembly,
+    GetMemoryEntryRequest,
     PrepareContextRequest,
     RememberMemoryRequest,
     SearchMemoryRequest,
@@ -314,6 +317,52 @@ def test_prepare_context_keeps_referenced_scope_eligible_when_local_recall_is_fu
             assert prepared.content is not None
             items = json.loads(prepared.content.splitlines()[-2])["items"]
             assert any(item["citation"].get("memory", {}).get("scope_id") == shared.scope_id for item in items)
+
+    asyncio.run(scenario())
+
+
+def test_prepare_evidence_resolves_a_literal_excerpt_from_referenced_memory() -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(BuiltinConfig(database=SQLiteConfig())) as runtime:
+            assert runtime.scopes is not None
+            source = await runtime.scopes.create(
+                ScopeDraft(title="Lab", summary="Sensor records", idempotency_key="evidence-source")
+            )
+            reader = await runtime.scopes.create(
+                ScopeDraft(
+                    title="Reader",
+                    summary="Uses lab records",
+                    context_references=(source.scope_id,),
+                    idempotency_key="evidence-reader",
+                )
+            )
+            late_sentence = "The cobalt sensor records temperature at 51 °C."
+            memory = runtime.memory.for_scope(source.scope_id)
+            await memory.remember(
+                RememberMemoryRequest(
+                    entries=(MemoryEntryInput(kind="fact", text="Archive note. " * 150 + late_sentence),)
+                )
+            )
+
+            prepared = await runtime.context.for_scope(reader.scope_id).prepare(
+                PrepareContextRequest(
+                    query="cobalt sensor temperature",
+                    evidence_selection=True,
+                    include_code=True,
+                    assembly=ContextAssembly(sections=()),
+                    max_bytes=900,
+                )
+            )
+
+            assert prepared.content is not None
+            assert prepared.content_bytes == len(prepared.content.encode("utf-8")) <= 900
+            items = json.loads(prepared.content.splitlines()[-2])["items"]
+            assert any(late_sentence in item["content"] for item in items)
+            for item in items:
+                citation = item["citation"]
+                assert citation["scope_id"] == source.scope_id
+                record = await memory.get(GetMemoryEntryRequest(citation=MemoryCitation.model_validate(citation)))
+                assert item["content"] == record.entry.text[item["start"] : item["end"]]
 
     asyncio.run(scenario())
 
