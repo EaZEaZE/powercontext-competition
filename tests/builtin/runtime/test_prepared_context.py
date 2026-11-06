@@ -86,6 +86,72 @@ def _items(content: str | None) -> list[_PreparedItem]:
     return cast(list[_PreparedItem], json.loads(content.splitlines()[-2])["items"])
 
 
+def test_evidence_keeps_distant_offsets_and_distinct_scope_identities() -> None:
+    first = 'Cobalt sensor "北区" detected a surge.\u2028The cobalt sensor logs confirmed the surge.'
+    last = "The cobalt sensor failed at 51 °C."
+    text = "🔎 Prior note. " + first + " " + "Unrelated archive. " * 30 + last
+    hit = _hit("sensor", text)
+    groups = tuple(PreparedMemoryCandidates(scope, MEMORY_REF, (hit,)) for scope in ("current", "shared"))
+    request = PrepareContextRequest(query="cobalt sensor", max_bytes=1800, evidence_selection=True)
+    builder = PreparedContextBuilder()
+    build = builder.build_scopes_result(
+        request=request, current_scope_id="current", memory_candidates=(*groups, groups[0])
+    )
+
+    assert build.context.content is not None
+    assert build.context.content_bytes == len(build.context.content.encode("utf-8")) <= request.max_bytes
+    payload = json.loads(build.context.content.splitlines()[-2])
+    assert payload["trust"] == "untrusted_history"
+    assert len(build.fragments) == 4
+    assert {
+        (fragment.address.memory.scope_id, sentence)
+        for fragment in build.fragments
+        for sentence in (first, last)
+        if sentence in fragment.text
+    } == {(scope, sentence) for scope in ("current", "shared") for sentence in (first, last)}
+    for item, fragment, origin in zip(payload["items"], build.fragments, build.origins, strict=True):
+        assert origin == fragment.address
+        assert fragment.text == text[fragment.start : fragment.end]
+        assert item == {
+            "citation": {
+                "scope_id": fragment.address.memory.scope_id,
+                "memory_ref": MEMORY_REF.model_dump(mode="json"),
+                "entry_id": hit.entry_id,
+                "entry_version_id": hit.entry_version_id,
+            },
+            "content": fragment.text,
+            "start": fragment.start,
+            "end": fragment.end,
+        }
+
+
+def test_evidence_budget_counts_escaped_unicode_and_citation_bytes() -> None:
+    text = "海洋观测站 " + '海浪预警 "风暴" \\ ' * 8 + "。"
+    scope_id = "project:" + "x" * 100
+    builder = PreparedContextBuilder()
+    request = PrepareContextRequest(query="海浪预警", evidence_selection=True)
+
+    def build(max_bytes: int) -> PreparedContextBuild:
+        return builder.build_result(
+            request=request.model_copy(update={"max_bytes": max_bytes}),
+            scope_id=scope_id,
+            memory_ref=MEMORY_REF,
+            hits=(_hit("warnings", text),),
+        )
+
+    full = build(1000)
+    assert [fragment.text for fragment in full.fragments] == [text]
+    exact_size = full.context.content_bytes
+    assert build(exact_size) == full
+    tighter = build(exact_size - 1)
+    assert tighter.context.content_bytes <= exact_size - 1
+    assert all(fragment.text != text for fragment in tighter.fragments)
+    empty = build(512)
+    assert empty.context.status == "empty"
+    assert empty.context.content_bytes == 0
+    assert empty.fragments == empty.origins == ()
+
+
 def _experience_hit(artifact_id: str = "experience-1", revision: int = 1) -> ExperienceSearchHit:
     return ExperienceSearchHit(
         artifact_ref=ArtifactRef(family="experience", artifact_id=artifact_id, revision=revision),

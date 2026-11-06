@@ -35,6 +35,13 @@ _MAX_BODY_BYTES = 2000
 _MIN_TRUNCATED_BODY_BYTES = 64
 
 
+def render_context_envelope(items: Sequence[dict[str, object]]) -> str:
+    """Wrap JSON items in the original untrusted-history context format."""
+
+    payload = json.dumps({"trust": "untrusted_history", "items": items}, ensure_ascii=False, separators=(",", ":"))
+    return f"{TRUST_POLICY}\n\nBEGIN_POWERCONTEXT_PREPARED_CONTEXT_V1\n{payload}\nEND_POWERCONTEXT_PREPARED_CONTEXT_V1"
+
+
 @dataclass(frozen=True)
 class ContextTextItem:
     """An exact origin and presentation data for one included entry."""

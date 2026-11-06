@@ -228,12 +228,17 @@ class ContextAssembly(_PreparedContextModel):
 
 
 class PrepareContextRequest(_PreparedContextModel):
-    """Prepare bounded context for one Agent turn."""
+    """Prepare bounded context for one Agent turn.
+
+    Evidence selection delivers cited Memory excerpts in the JSON envelope and
+    takes precedence over text assembly and code inclusion.
+    """
 
     query: Annotated[str, Field(min_length=1, max_length=8192)]
     max_bytes: Annotated[int, Field(ge=512, le=32768)] = 8000
     assembly: ContextAssembly | None = None
     include_code: bool = Field(default=False, strict=True)
+    evidence_selection: bool = False
 
     @model_validator(mode="before")
     @classmethod

@@ -835,6 +835,8 @@ class ScopedContextApplication:
         *,
         authorize_scopes: Callable[[tuple[str, ...]], Awaitable[None]] | None = None,
     ) -> PreparedContext:
+        if request.evidence_selection:
+            request = request.model_copy(update={"assembly": None, "include_code": False})
         if (
             request.assembly is not None
             and sum(section.limit for section in request.assembly.sections) > self._runtime.context_assembly_max_entries
@@ -913,6 +915,8 @@ class ScopedContextApplication:
             if request.assembly is not None
             else {MEMORY_FAMILY, EXPERIENCE_FAMILY, TOPIC_MEMORY_FAMILY}
         )
+        if request.evidence_selection:
+            families = {MEMORY_FAMILY}
         # Caller-owned cache of the query vectors round 0 already paid for, keyed by scope.
         # Expansion rounds read it so a repeat search does not re-embed; round 0 fills it.
         reuse: dict[str, MemoryQueryEmbedding] = {}
