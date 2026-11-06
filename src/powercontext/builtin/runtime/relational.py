@@ -20,8 +20,8 @@ import asyncio
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable, Mapping
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -190,6 +190,7 @@ from powercontext.builtin.runtime.protocols import (
 )
 from powercontext.builtin.runtime.recall import RelationalRecallTokenEstimator
 from powercontext.builtin.runtime.recurrence import RelationalRecurrenceLedger
+from powercontext.builtin.runtime.source_lifecycle import SourceLifecycleTransaction
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics
 from powercontext.builtin.scope import ScopeApplication
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
@@ -1387,6 +1388,20 @@ class RelationalContexts:
             services=services,
             lock=self._experience_locks.setdefault(services.scope_id, asyncio.Lock()),
         ).flush(limit=limit, processing=processing, on_commit=on_commit)
+
+    @asynccontextmanager
+    async def source_lifecycle_transaction(self, scope_id: str, /) -> AsyncIterator[SourceLifecycleTransaction]:
+        services = self._services_for(scope_id)
+        async with self.database.transaction() as connection:
+            _, catalog = services.sources(connection)
+            yield SourceLifecycleTransaction(
+                connection,
+                services.scope_id,
+                sources=self.repositories.sources,
+                topics=self.repositories.topic_memories,
+                memory=services.memory(catalog, connection),
+                memory_artifact_id=services.memory_artifact_id,
+            )
 
     async def get(
         self,

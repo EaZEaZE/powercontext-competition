@@ -248,6 +248,7 @@ from powercontext.builtin.runtime.recall_sufficiency import (
     build_recall_candidates,
     recall_effort,
 )
+from powercontext.builtin.runtime.source_lifecycle import SourceLifecycleApplication, SourceLifecycleTransactions
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics, overview_selection
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
@@ -3001,6 +3002,7 @@ class BuiltinRuntime:
         skill_usage_recorder: SkillUsageRecorder | None = None,
         experience_incubator: ExperienceIncubator | None = None,
         topic_memory_search: TopicMemorySearch | None = None,
+        source_lifecycle_transactions: SourceLifecycleTransactions | None = None,
         topic_memory_get: TopicMemoryGet | None = None,
         topic_memory_browse: TopicMemoryBrowse | None = None,
         topic_memory_flush: TopicMemoryFlush | None = None,
@@ -3109,6 +3111,7 @@ class BuiltinRuntime:
         self.handoff = HandoffApplication(self)
         self.work = WorkApplication(self)
         self.memory = MemoryApplication(self)
+        self.lifecycle = SourceLifecycleApplication(self, source_lifecycle_transactions)
         self.topic_memory = TopicMemoryApplication(self)
         self.records = RecordApplication(self)
         self.prompts = PromptApplication(self)
