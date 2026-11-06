@@ -95,6 +95,9 @@ cli = [
     "pyyaml>=6,<7",
     "typer>=0.16,<1",
 ]
+pdf = [
+    "pypdf[crypto]==6.19.0",
+]
 
 [project.scripts]
 powercontext = "powercontext.cli.app:main"
@@ -127,7 +130,7 @@ notebooks = [
     "playwright>=1.55,<2",
 ]
 dev = [
-    "powercontext[code]",
+    "powercontext[code,pdf]",
     "datamodel-code-generator==0.64.0",
     "powercontext[cli,server]",
     "powercontext-langchain",
