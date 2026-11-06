@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Bounded reconciliation of Source-driven Family progress at startup."""
+"""Discover pending Source-driven Family work using journal metadata."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from powercontext.builtin.persistence.cursors import SourceCursorRepository
 from powercontext.builtin.persistence.database import AsyncDatabase
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
 from powercontext.builtin.persistence.supervision import ArtifactProcessingFence, ArtifactProcessingLeaseRepository
-from powercontext.builtin.persistence.tables import PROFILE_POLICIES_TABLE, SOURCE_JOURNAL_HEADS_TABLE
+from powercontext.builtin.persistence.tables import PROFILE_POLICIES_TABLE, SOURCE_JOURNAL_HEADS_TABLE, SOURCES_TABLE
 
 
 async def enabled_profile_scopes(connection: AsyncConnection, scope_ids: tuple[str, ...]) -> frozenset[str]:
@@ -43,6 +43,47 @@ async def enabled_profile_scopes(connection: AsyncConnection, scope_ids: tuple[s
         .with_for_update()
     )
     return frozenset(rows)
+
+
+async def source_count_ready_scopes(
+    connection: AsyncConnection,
+    binding_name: str,
+    scope_ids: tuple[str, ...],
+    threshold: int,
+) -> tuple[str, ...]:
+    """Qualify a bounded page against each Scope's committed Family cursor."""
+    if not scope_ids:
+        return ()
+    cursors = await SourceCursorRepository().load_many(connection, scope_ids, binding_name)
+    heads = SOURCE_JOURNAL_HEADS_TABLE
+    positions = dict(
+        (await connection.execute(select(heads.c.scope_id, heads.c.position).where(heads.c.scope_id.in_(scope_ids))))
+        .tuples()
+        .all()
+    )
+    ready = []
+    sources = SOURCES_TABLE
+    for scope_id in scope_ids:
+        after = cursors[scope_id].cursor.sequence if scope_id in cursors else 0
+        through = positions.get(scope_id, 0)
+        if through - after < threshold:
+            continue
+        # The head bounds the count. The indexed range confirms actual journal
+        # identities and only reads through the threshold, never Source bodies.
+        position = await connection.scalar(
+            select(sources.c.journal_position)
+            .where(
+                sources.c.scope_id == scope_id,
+                sources.c.journal_position > after,
+                sources.c.journal_position <= through,
+            )
+            .order_by(sources.c.journal_position)
+            .offset(threshold - 1)
+            .limit(1)
+        )
+        if position is not None:
+            ready.append(scope_id)
+    return tuple(ready)
 
 
 class SourceProcessingPendingProvider:
