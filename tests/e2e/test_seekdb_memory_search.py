@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import math
 import tempfile
 from pathlib import Path
 
@@ -122,3 +123,43 @@ async def test_seekdb_hybrid_preserves_native_vector_tie_order() -> None:
             repeated = await memory.search(query, memories=(head,), mode="hybrid", limit=10)
             assert len(vector.hits) == 10
             assert hybrid.hits == vector.hits == repeated.hits
+
+
+class _TailEmbedding:
+    profile = _Embedding.profile
+
+    async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
+        vectors = {
+            "water": (1.0, 0.0, 0.0),
+            "Reservoir capacity increased.": (0.28, math.sqrt(1 - 0.28**2), 0.0),
+        }
+        return EmbeddingResult(vectors=tuple(vectors.get(text, (0.0, 1.0, 0.0)) for text in texts))
+
+
+@pytest.mark.asyncio
+async def test_seekdb_hybrid_retains_a_semantic_neighbor_at_the_result_boundary() -> None:
+    pytest.importorskip("pylibseekdb")
+    with tempfile.TemporaryDirectory(prefix="pc-memory-") as directory:
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SeekDBConfig(path=Path(directory) / "db")), embedding_model=_TailEmbedding()
+        ) as contexts:
+            memory = (await contexts.get("project")).artifacts.memory
+            head = await memory.remember(
+                memory=None,
+                entries=(
+                    MemoryEntryInput(kind="fact", text="Water supply changed."),
+                    MemoryEntryInput(kind="fact", text="Water was sampled."),
+                    MemoryEntryInput(kind="fact", text="Reservoir capacity increased."),
+                ),
+                mode="append",
+            )
+            assert head is not None
+            lexical = await memory.search("water", memories=(head,), mode="fts", limit=2)
+            hybrid = await memory.search("water", memories=(head,), mode="hybrid", limit=2)
+
+            assert len(hybrid.hits) == 2
+            assert hybrid.hits[0] == lexical.hits[0]
+            assert hybrid.hits[1].text == "Reservoir capacity increased."
+            assert hybrid.hits[1].matched_by == ("vector",)
+            assert hybrid.hits[1].memory_ref == head.as_ref()
+            assert hybrid.hits[0].score >= hybrid.hits[1].score

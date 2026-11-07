@@ -153,6 +153,7 @@ class MemorySearchChannels(BaseModel):
 
     fts: tuple[MemoryChannelHit, ...] = ()
     vector: tuple[MemoryChannelHit, ...] = ()
+    retain_semantic_tail: bool = False
 
 
 class CandidatePipeline(Protocol):

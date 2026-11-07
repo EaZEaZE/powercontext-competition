@@ -550,6 +550,7 @@ class SeekDBMemoryIndex(CompositeMemoryIndex):
         return MemorySearchChannels(
             fts=memory_channel_hits((row for row in rows if row["channel"] == "fts"), request.memories),
             vector=memory_channel_hits((row for row in rows if row["channel"] == "vector"), request.memories),
+            retain_semantic_tail=True,
         )
 
 

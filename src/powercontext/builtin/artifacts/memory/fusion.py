@@ -27,6 +27,7 @@ from powercontext.builtin.artifacts.search import AdmissionFloor, admits_fts_tex
 
 _RRF_CONSTANT = 60
 _MIN_SEMANTIC_SIMILARITY = 0.3
+_TAIL_SEMANTIC_SIMILARITY = 0.25
 
 _HitIdentity = tuple[str, int, str, str]
 
@@ -112,7 +113,45 @@ def fuse_rankings(
     )
 
 
-def _identity(hit: MemoryChannelHit) -> _HitIdentity:
+def retain_semantic_tail(
+    hits: tuple[MemoryHit, ...], vector: Sequence[MemoryChannelHit], *, limit: int
+) -> tuple[tuple[MemoryHit, ...], int]:
+    """Keep a high-ranking semantic neighbor when lexical overlap crowds the result boundary."""
+    if not vector or limit <= 1:
+        return hits, 0
+    seen = {_identity(hit) for hit in hits}
+    # Preserve the lead results. A full result can trade only its last slot.
+    remaining = max(1, limit - len(hits))
+    ceiling = hits[-1].score if hits else 1.0 / (_RRF_CONSTANT + 1)
+    tail: list[MemoryHit] = []
+    additional_admissions = 0
+    for rank, candidate in enumerate(vector[:limit], start=1):
+        identity = _identity(candidate)
+        if identity in seen or candidate.distance is None:
+            continue
+        similarity = _unit_l2_cosine_similarity(candidate.distance)
+        if similarity < _TAIL_SEMANTIC_SIMILARITY:
+            continue
+        seen.add(identity)
+        tail.append(
+            MemoryHit(
+                memory_ref=candidate.memory_ref,
+                entry_id=candidate.entry_id,
+                entry_version_id=candidate.entry_version_id,
+                text=candidate.text,
+                score=min(ceiling, 1.0 / (_RRF_CONSTANT + rank)),
+                matched_by=("vector",),
+            )
+        )
+        additional_admissions += similarity < _MIN_SEMANTIC_SIMILARITY
+        if len(tail) == remaining:
+            break
+    if not tail:
+        return hits, 0
+    return hits[: limit - len(tail)] + tuple(tail), additional_admissions
+
+
+def _identity(hit: MemoryChannelHit | MemoryHit) -> _HitIdentity:
     return (
         hit.memory_ref.artifact_id,
         hit.memory_ref.revision,
