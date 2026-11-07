@@ -97,3 +97,28 @@ async def test_seekdb_hybrid_vector_limit_applies_after_tag_filtering() -> None:
                 )
             assert "TEXT RETRIEVAL SCAN" in plan
             assert "VECTOR INDEX" in plan
+
+
+@pytest.mark.asyncio
+async def test_seekdb_hybrid_preserves_native_vector_tie_order() -> None:
+    pytest.importorskip("pylibseekdb")
+    with tempfile.TemporaryDirectory(prefix="pc-memory-") as directory:
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SeekDBConfig(path=Path(directory) / "db")), embedding_model=_Embedding()
+        ) as contexts:
+            memory = (await contexts.get("project")).artifacts.memory
+            head = await memory.remember(
+                memory=None,
+                entries=tuple(MemoryEntryInput(kind="fact", text=f"Equal distance record {i}.") for i in range(50)),
+                mode="append",
+            )
+            assert head is not None
+
+            # There is no lexical overlap, so hybrid should keep the vector
+            # ranking even when the result limit cuts through equal distances.
+            query = "unmatched"
+            vector = await memory.search(query, memories=(head,), mode="vector", limit=10)
+            hybrid = await memory.search(query, memories=(head,), mode="hybrid", limit=10)
+            repeated = await memory.search(query, memories=(head,), mode="hybrid", limit=10)
+            assert len(vector.hits) == 10
+            assert hybrid.hits == vector.hits == repeated.hits
