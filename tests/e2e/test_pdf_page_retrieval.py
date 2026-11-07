@@ -66,7 +66,9 @@ def test_search_keeps_evidence_from_both_statements_in_the_requested_report(tmp_
                 for number, text in enumerate(
                     (
                         "Consolidated Statements of Operations\nNet sales 300\nOperating profit 120",
-                        "Consolidated Statements of Cash Flows\nNet cash provided by operating activities 180",
+                        "Consolidated Statements of Cash Flows\nNet cash provided by operating activities 180\n"
+                        + "Notes to the statement.\n" * 400
+                        + "Closing cash 360",
                     ),
                     1,
                 ):

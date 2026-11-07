@@ -17,7 +17,7 @@ from typing import cast
 
 import pytest
 from pypdf import PdfWriter
-from pypdf.generic import DictionaryObject, NameObject, NumberObject
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject, NumberObject
 
 from powercontext.sources.pdf_pages import PDFDocumentInput, parse_pdf_document
 
@@ -31,6 +31,33 @@ def test_pdf_with_truncated_end_marker_is_rejected() -> None:
     raw = buffer.getvalue().rstrip().removesuffix(b"F")
     with pytest.raises(ValueError, match="end-of-file"):
         parse_pdf_document(PDFDocumentInput(document_id="truncated", content=raw))
+
+
+def test_pdf_recovers_the_ligature_declared_in_marked_content() -> None:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=200)
+    cmap = DecodedStreamObject()
+    cmap.set_data(b"begincmap\n1 beginbfchar\n<80> <0000>\nendbfchar\nendcmap\n")
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+        NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
+        NameObject("/ToUnicode"): writer._add_object(cmap),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+    })
+    stream = DecodedStreamObject()
+    stream.set_data(
+        b"BT /F1 12 Tf 20 120 Td (elec) Tj\n/Span <</ActualText <FEFF00740069>>> BDC <80> Tj EMC\n(on 123) Tj ET"
+    )
+    page.replace_contents(stream.flate_encode())
+    buffer = BytesIO()
+    writer.write(buffer)
+
+    (parsed,) = parse_pdf_document(PDFDocumentInput(document_id="ligature", content=buffer.getvalue()))
+    assert parsed.text.split() == ["election", "123"]
 
 
 @pytest.mark.parametrize("encrypted", [False, True])

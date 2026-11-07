@@ -17,10 +17,10 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from hashlib import sha256
 from io import BytesIO
-from itertools import pairwise
 from math import log1p
 from typing import TYPE_CHECKING, Annotated, NamedTuple, cast
 
@@ -31,10 +31,10 @@ from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, AdapterSourceDefi
 from powercontext.sources.models import Source, SourceMaterialization
 
 if TYPE_CHECKING:
-    from powercontext.builtin.artifacts.memory.models import MemoryHit
     from powercontext.builtin.runtime.application import ScopedMemoryApplication
+    from powercontext.builtin.runtime.models import MemoryEntryRecord
 
-_SOURCE_TYPE = "pdf-page"
+PDF_PAGE_SOURCE_TYPE = "pdf-page"
 
 
 def _nonblank_id(value: str) -> str:
@@ -71,6 +71,8 @@ def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
     from pypdf.errors import PdfReadError
     from pypdf.generic import DictionaryObject
 
+    from powercontext.sources._pdf_text import extract_page_text
+
     content = value.content
     # pypdf can recover a truncated EOF marker even in strict mode.
     if not content.rstrip(b"\x00\t\n\f\r ").endswith(b"%%EOF"):
@@ -83,7 +85,7 @@ def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
             count = page_tree["/Count"]
             if not isinstance(count, int) or count != len(reader.pages):
                 raise PdfReadError("PDF page tree has an inconsistent count")  # noqa: TRY003, TRY301
-            texts = tuple(page.extract_text() for page in reader.pages)
+            texts = tuple(extract_page_text(page) for page in reader.pages)
             if reader.is_encrypted:
                 # For encrypted files len(reader.pages) uses /Count directly.
                 try:
@@ -98,7 +100,12 @@ def parse_pdf_document(value: PDFDocumentInput) -> tuple[PDFPageInput, ...]:
 
     digest = sha256(content).hexdigest()
     return tuple(
-        PDFPageInput(document_id=value.document_id, document_sha256=digest, page_number=number, text=text)
+        PDFPageInput(
+            document_id=value.document_id,
+            document_sha256=digest,
+            page_number=number,
+            text=unicodedata.normalize("NFC", text),
+        )
         for number, text in enumerate(texts, 1)
     )
 
@@ -108,7 +115,7 @@ class _PDFPageSource(Source):
 
 
 class _PDFPageAdapter:
-    name = _SOURCE_TYPE
+    name = PDF_PAGE_SOURCE_TYPE
     input_class = PDFPageInput
     source_class = _PDFPageSource
 
@@ -133,7 +140,7 @@ class _PDFPageProjection:
     def project(self, source: _PDFPageSource, /) -> TextEvidence:
         page = source.page
         return TextEvidence(
-            source_type=_SOURCE_TYPE,
+            source_type=PDF_PAGE_SOURCE_TYPE,
             source_id=source.name,
             content=f"{page.document_id}\n{page.text}",
             metadata={
@@ -147,7 +154,7 @@ class _PDFPageProjection:
 PDF_PAGE_SOURCE_DEFINITION = AdapterSourceDefinition(_PDFPageAdapter(), projections=(_PDFPageProjection(),))
 
 _WORDS = re.compile(r"[^\W_]+")
-_YEAR = re.compile(r"(?:fy)?(?:19|20)\d{2}")
+_YEAR = re.compile(r"(?:fy)?((?:19|20)\d{2})(?:q[1-4])?")
 _QUERY_FILLER = frozenset([
     "about",
     "according",
@@ -194,18 +201,22 @@ class _Topic(NamedTuple):
     evidence: re.Pattern[str]
 
 
-# Annual reports use different headings for the same disclosure. Separate FTS
-# queries keep a question about several statements from losing one at retrieval.
+# Annual reports use different headings and line item names for the same disclosure.
 _TOPICS = (
     _Topic(
-        re.compile(r"\b(?:cash flows?|capex|capital expenditures?|d a|depreciation and amortization)\b"),
+        re.compile(
+            r"\b(?:cash flows?|capex|capital expenditures?|d a|depreciation and amortization|"
+            r"cash (?:provided|generated|received|used) (?:by|from|in) operat\w+|"
+            r"(?:investing|investments?|purchases?) in property|property (?:plant )?and equipment)\b"
+        ),
         "cash flows operating activities investing financing capital expenditures additions property plant equipment",
         re.compile(r"\b(?:statements? of (?:consolidated )?cash flows?|cash flows? statements?)\b"),
     ),
     _Topic(
         re.compile(
             r"\b(?:income statements?|p l|p and l|statements? of (?:operations|earnings|income)|"
-            r"ebitda|operating (?:income|profit|margin)|net (?:income|earnings|loss)|gross (?:profit|margin))\b"
+            r"ebitda|operating (?:income|profit|margin)|net (?:income|earnings|loss|sales|revenue)|"
+            r"gross (?:profit|margin)|return on (?:assets|equity)|cost of (?:sales|revenue|goods sold))\b"
         ),
         "consolidated statements income operations earnings profit net sales revenues cost",
         re.compile(
@@ -216,7 +227,8 @@ _TOPICS = (
     _Topic(
         re.compile(
             r"\b(?:balance sheets?|financial position|(?:total|current) (?:assets|liabilities)|"
-            r"current ratio|working capital|total (?:debt|equity))\b"
+            r"(?:current|quick) ratio|working capital|total (?:debt|equity)|return on (?:assets|equity)|"
+            r"debt to equity|shareholders? equity|stockholders? equity)\b"
         ),
         "balance sheets financial position assets liabilities equity current",
         re.compile(r"\b(?:balance sheets?|statements? of (?:consolidated )?financial position)\b"),
@@ -231,6 +243,11 @@ _TOPICS = (
         "legal proceedings litigation lawsuits claims commitments contingencies",
         re.compile(r"\b(?:legal proceedings|legal matters|litigation|(?:commitments and|loss) contingencies)\b"),
     ),
+    _Topic(
+        re.compile(r"\b(?:employees?|headcount|workforce|personnel|staffing|human capital)\b"),
+        "employees employed employment headcount workforce personnel staff",
+        re.compile(r"\b(?:employees|workforce|human capital(?: management)?)\b"),
+    ),
 )
 
 
@@ -242,14 +259,21 @@ def _term(word: str) -> str:
     return word
 
 
-def _document_matches(label: str, question: str, question_names: set[str]) -> bool:
+def _report_match(label: str, question_names: set[str], years: set[str]) -> tuple[bool, bool]:
     # A label like COMPANY_2022_10K can disambiguate equivalent disclosures.
     name = []
+    year_match = False
     for word in _WORDS.findall(label.casefold()):
-        if _YEAR.fullmatch(word) or word in {"10k", "10q", "annual", "report"}:
+        if (year := _YEAR.fullmatch(word)) is not None:
+            year_match = year[1] in years
+            break
+        if word in {"10k", "10q", "annual", "report"}:
             break
         name.append(word)
-    return bool(name) and (f" {' '.join(name)} " in question or "".join(name) in question_names)
+    while name and name[-1] in {"inc", "co", "corp", "corporation", "plc", "ltd", "limited"}:
+        name.pop()
+    company = "".join(name)
+    return company in question_names or company.removeprefix("the") in question_names, year_match
 
 
 def _heading_score(topic: _Topic, lines: list[str]) -> int:
@@ -265,64 +289,77 @@ def _heading_score(topic: _Topic, lines: list[str]) -> int:
     return int(mentioned)
 
 
-class _RankedHit(NamedTuple):
-    hit: MemoryHit
-    document_match: bool
+class _RankedPage(NamedTuple):
+    record: MemoryEntryRecord
+    report_match: tuple[bool, bool]
     score: float
-    headings: tuple[int, ...]
+    topics: tuple[float, ...]
 
 
-def _rank_pdf_hits(
-    hits: list[MemoryHit], terms: tuple[str, ...], topics: tuple[_Topic, ...], question_words: list[str]
-) -> list[MemoryHit]:
-    """Score rare terms, statement headings and report identity over the FTS pool."""
+def _rank_pdf_records(
+    records: list[MemoryEntryRecord],
+    terms: tuple[str, ...],
+    topics: tuple[_Topic, ...],
+    question_words: list[str],
+    fts_ranks: dict[str, int],
+) -> list[MemoryEntryRecord]:
+    """Rank complete pages using lexical matches, report identity and disclosure headings."""
 
-    if not hits:
+    if not records:
         return []
-    question = f" {' '.join(question_words)} "
-    question_names = set(question_words)
-    question_names.update(left + right for left, right in pairwise(question_words))
+    question_names = {
+        "".join(question_words[start:end])
+        for start in range(len(question_words))
+        for end in range(start + 1, min(start + 4, len(question_words)) + 1)
+    }
+    years = {match[1] for word in question_words if (match := _YEAR.fullmatch(word)) is not None}
+    topic_terms = tuple(set(map(_term, topic.terms.split())) for topic in topics)
+    term_set = set(terms).union(*topic_terms)
     pages = []
     frequencies: Counter[str] = Counter()
-    term_set = set(terms)
-    for hit in hits:
-        label, _, body = hit.text.partition("\n")
+    for record in records:
+        label, _, body = record.entry.text.partition("\n")
         body = body.casefold()
         words = _WORDS.findall(body)
         counts = Counter(term for word in words if (term := _term(word)) in term_set)
         frequencies.update(counts.keys())
         lines = [" ".join(_WORDS.findall(line)) for line in body.splitlines()] if topics else []
-        headings = tuple(_heading_score(topic, lines) for topic in topics)
-        pages.append((hit, _document_matches(label, question, question_names), len(words), counts, headings))
+        scores = tuple(
+            _heading_score(topic, lines) + 0.25 * len(counts.keys() & aliases)
+            for topic, aliases in zip(topics, topic_terms, strict=True)
+        )
+        pages.append((record, _report_match(label, question_names, years), len(words), counts, scores))
 
     average_length = max(sum(length for _, _, length, _, _ in pages) / len(pages), 1)
     weights = {term: log1p((len(pages) - frequencies[term] + 0.5) / (frequencies[term] + 0.5)) for term in terms}
     ranked = []
-    for hit, company_match, length, counts, headings in pages:
-        norm = 0.6 + 0.6 * length / average_length
+    for record, report_match, length, counts, scores in pages:
+        norm = 0.75 + 0.45 * length / average_length
         score = sum(weight * counts[term] / (counts[term] + norm) for term, weight in weights.items())
-        ranked.append(_RankedHit(hit, company_match, score, headings))
+        if (rank := fts_ranks.get(record.entry.entry_version_id)) is not None:
+            score += 1 / (1 + 0.2 * rank)
+        if score or any(scores):
+            ranked.append(_RankedPage(record, report_match, score, scores))
 
-    # Reserve leading results for each requested disclosure, even when a different
-    # statement repeats more of the question's terms.
-    prefer_named_report = any(row.document_match for row in ranked)
-    focused_lists = []
-    for index in range(len(topics)):
-        focused = sorted(
-            (row for row in ranked if row.headings[index] and row.document_match == prefer_named_report),
-            key=lambda row: (row.headings[index], row.score),
+    # Reserve leading results for each disclosure when a question needs several
+    # statements. Otherwise terms repeated in one statement can crowd out another.
+    focused = [
+        sorted(
+            (row for row in ranked if row.topics[index] > 0),
+            key=lambda row: (row.report_match, row.topics[index], row.score),
             reverse=True,
-        )
-        focused_lists.append(focused[:2])
-
-    preferred: dict[str, MemoryHit] = {}
-    for rank in range(2):
-        for focused in focused_lists:
-            if rank < len(focused):
-                hit = focused[rank].hit
-                preferred.setdefault(hit.entry_version_id, hit)
-    for row in sorted(ranked, key=lambda row: (row.document_match, row.score + sum(row.headings)), reverse=True):
-        preferred.setdefault(row.hit.entry_version_id, row.hit)
+        )[:2]
+        for index in range(len(topics))
+    ]
+    preferred: dict[str, MemoryEntryRecord] = {}
+    best_report = max((row.report_match for row in ranked), default=(False, False))
+    for position in range(2):
+        for rows in focused:
+            if position < len(rows) and rows[position].report_match == best_report:
+                record = rows[position].record
+                preferred.setdefault(record.entry.entry_version_id, record)
+    for row in sorted(ranked, key=lambda row: (row.report_match, row.score + sum(row.topics)), reverse=True):
+        preferred.setdefault(row.record.entry.entry_version_id, row.record)
     return list(preferred.values())
 
 
@@ -332,7 +369,7 @@ async def search_pdf_pages(
     """Search a scoped Memory for distinct, exactly citable PDF pages."""
 
     from powercontext.builtin.artifacts.search import analyze_fts_query
-    from powercontext.builtin.runtime.models import GetMemoryEntryRequest, SearchMemoryRequest
+    from powercontext.builtin.runtime.models import SearchMemoryRequest
 
     question_words = _WORDS.findall(question.casefold())
     if limit <= 0 or not question_words:
@@ -344,31 +381,31 @@ async def search_pdf_pages(
     if not analyzed:
         analyzed = analyze_fts_query(question).split()
     terms = [word for word in analyzed if word not in _QUERY_FILLER and not _YEAR.fullmatch(word)]
-    # Long calculation and response instructions should not dominate FTS admission.
     query_words = tuple(dict.fromkeys(terms or analyzed))[:24]
-    queries = (" ".join(query_words), *(topic.terms for topic in topics))
-    hits: dict[str, MemoryHit] = {}
-    for query in queries:
-        result = await memory.search(SearchMemoryRequest(query=query, mode="fts", limit=max(4 * limit, 64)))
-        for hit in result.hits:
-            hits.setdefault(hit.entry_version_id, hit)
 
-    citations: list[MemoryCitation] = []
-    seen_pages: set[str] = set()
+    # FTS is useful for literal matches, but its admission and top-k apply to
+    # the whole scope. Rank the PDF records from one exact Memory snapshot as
+    # well, so another report or a synonym cannot exclude the evidence page.
+    hits = await memory.search(SearchMemoryRequest(query=" ".join(query_words), mode="fts", limit=max(4 * limit, 64)))
+    snapshot = await memory.list()
+    pages = [
+        record
+        for record in snapshot.entries
+        if len(record.entry.sources) == 1 and record.entry.sources[0].source_type == PDF_PAGE_SOURCE_TYPE
+    ]
+    fts_ranks = (
+        {hit.entry_version_id: rank for rank, hit in enumerate(hits.hits)}
+        if hits.memory_ref == snapshot.memory_ref
+        else {}
+    )
     rank_terms = tuple(dict.fromkeys(map(_term, query_words)))
-    for hit in _rank_pdf_hits(list(hits.values()), rank_terms, topics, question_words):
-        citation = MemoryCitation(
-            memory_ref=hit.memory_ref, entry_id=hit.entry_id, entry_version_id=hit.entry_version_id
-        )
-        record = await memory.get(GetMemoryEntryRequest(citation=citation))
-        sources = record.entry.sources
-        if len(sources) != 1 or sources[0].source_type != _SOURCE_TYPE or sources[0].source_id in seen_pages:
-            continue
-        seen_pages.add(sources[0].source_id)
-        citations.append(citation)
+    citations: dict[str, MemoryCitation] = {}
+    for record in _rank_pdf_records(pages, rank_terms, topics, question_words, fts_ranks):
+        source_id = record.entry.sources[0].source_id
+        citations.setdefault(source_id, record.citation)
         if len(citations) == limit:
             break
-    return tuple(citations)
+    return tuple(citations.values())
 
 
 __all__ = ["PDF_PAGE_SOURCE_DEFINITION", "PDFDocumentInput", "PDFPageInput", "parse_pdf_document", "search_pdf_pages"]

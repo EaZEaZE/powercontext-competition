@@ -117,6 +117,7 @@ from powercontext.sources import (
     SourceRef,
     TextEvidence,
 )
+from powercontext.sources.pdf_pages import PDF_PAGE_SOURCE_TYPE
 
 MemoryRememberMode: TypeAlias = Literal["append", "extract", "auto"]
 IdFactory: TypeAlias = Callable[[str], str]
@@ -1654,6 +1655,16 @@ class MemoryService:
             sources = (*previous.sources, *candidate_source_refs)
             artifacts = (*previous.artifacts, *candidate_artifacts)
         try:
+            if len(sources) == 1 and sources[0].source_type == PDF_PAGE_SOURCE_TYPE:
+                # Allow the larger entry only for a new, complete page supplied
+                # by its authoritative Source. A later edit uses the usual limit.
+                page_text = (
+                    _source_gate_content(candidate_sources[0], self._source_resolver)
+                    if previous is None and len(candidate_sources) == 1
+                    else None
+                )
+                if page_text is None or page_text.strip() != candidate.text.strip():
+                    normalize_text(candidate.text)
             return self._entry_material(
                 kind=candidate.kind,
                 text=candidate.text,
@@ -1717,11 +1728,11 @@ class MemoryService:
         artifacts: Sequence[ArtifactRef],
     ) -> _EntryMaterial:
         normalized_kind = normalize_kind(kind)
-        normalized_text = normalize_text(text)
         canonical_sources = _canonical_source_refs(sources)
         canonical_artifacts = _canonical_artifact_refs(artifacts)
         source_refs = tuple(source.model_dump(mode="json") for source in canonical_sources)
         artifact_refs = tuple(artifact.model_dump(mode="json") for artifact in canonical_artifacts)
+        normalized_text = normalize_text(text, source_refs=source_refs)
         content_bytes = entry_content_bytes(
             kind=normalized_kind,
             text=normalized_text,
