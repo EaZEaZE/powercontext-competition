@@ -28,6 +28,7 @@ from powercontext.builtin.artifacts.search import AdmissionFloor, admits_fts_tex
 _RRF_CONSTANT = 60
 _MIN_SEMANTIC_SIMILARITY = 0.3
 _TAIL_SEMANTIC_SIMILARITY = 0.25
+_CORROBORATED_SEMANTIC_SIMILARITY = 0.15
 
 _HitIdentity = tuple[str, int, str, str]
 
@@ -114,40 +115,50 @@ def fuse_rankings(
 
 
 def retain_semantic_tail(
-    hits: tuple[MemoryHit, ...], vector: Sequence[MemoryChannelHit], *, limit: int
+    hits: tuple[MemoryHit, ...],
+    vector: Sequence[MemoryChannelHit],
+    *,
+    fts: Sequence[MemoryChannelHit],
+    limit: int,
 ) -> tuple[tuple[MemoryHit, ...], int]:
     """Keep a high-ranking semantic neighbor when lexical overlap crowds the result boundary."""
     if not vector or limit <= 1:
         return hits, 0
     seen = {_identity(hit) for hit in hits}
     # Preserve the lead results. A full result can trade only its last slot.
-    remaining = max(1, limit - len(hits))
-    ceiling = hits[-1].score if hits else 1.0 / (_RRF_CONSTANT + 1)
-    tail: list[MemoryHit] = []
-    additional_admissions = 0
+    free_slots = limit - len(hits)
+    lexical_support = {_identity(hit) for hit in fts[:limit]} if free_slots else set()
+    nearby: list[tuple[int, MemoryChannelHit, float]] = []
+    corroborated: list[tuple[int, MemoryChannelHit, float]] = []
     for rank, candidate in enumerate(vector[:limit], start=1):
         identity = _identity(candidate)
         if identity in seen or candidate.distance is None:
             continue
-        similarity = _unit_l2_cosine_similarity(candidate.distance)
-        if similarity < _TAIL_SEMANTIC_SIMILARITY:
-            continue
         seen.add(identity)
+        similarity = _unit_l2_cosine_similarity(candidate.distance)
+        if similarity >= _TAIL_SEMANTIC_SIMILARITY:
+            nearby.append((rank, candidate, similarity))
+        elif identity in lexical_support and similarity >= _CORROBORATED_SEMANTIC_SIMILARITY:
+            # Two channels can support a weaker match when a slot is empty.
+            corroborated.append((rank, candidate, similarity))
+    chosen = (nearby + corroborated)[: max(1, free_slots)]
+    if not chosen:
+        return hits, 0
+    ceiling = hits[-1].score if hits else 1.0 / (_RRF_CONSTANT + 1)
+    tail: list[MemoryHit] = []
+    for rank, candidate, similarity in chosen:
+        ceiling = min(ceiling, 1.0 / (_RRF_CONSTANT + rank))
         tail.append(
             MemoryHit(
                 memory_ref=candidate.memory_ref,
                 entry_id=candidate.entry_id,
                 entry_version_id=candidate.entry_version_id,
                 text=candidate.text,
-                score=min(ceiling, 1.0 / (_RRF_CONSTANT + rank)),
-                matched_by=("vector",),
+                score=ceiling,
+                matched_by=("fts", "vector") if similarity < _TAIL_SEMANTIC_SIMILARITY else ("vector",),
             )
         )
-        additional_admissions += similarity < _MIN_SEMANTIC_SIMILARITY
-        if len(tail) == remaining:
-            break
-    if not tail:
-        return hits, 0
+    additional_admissions = sum(similarity < _MIN_SEMANTIC_SIMILARITY for _, _, similarity in chosen)
     return hits[: limit - len(tail)] + tuple(tail), additional_admissions
 
 

@@ -131,6 +131,8 @@ class _TailEmbedding:
     async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
         vectors = {
             "water": (1.0, 0.0, 0.0),
+            "water supply quality": (1.0, 0.0, 0.0),
+            "Quality sampling changed.": (0.18, math.sqrt(1 - 0.18**2), 0.0),
             "Reservoir capacity increased.": (0.28, math.sqrt(1 - 0.28**2), 0.0),
         }
         return EmbeddingResult(vectors=tuple(vectors.get(text, (0.0, 1.0, 0.0)) for text in texts))
@@ -150,6 +152,7 @@ async def test_seekdb_hybrid_retains_a_semantic_neighbor_at_the_result_boundary(
                     MemoryEntryInput(kind="fact", text="Water supply changed."),
                     MemoryEntryInput(kind="fact", text="Water was sampled."),
                     MemoryEntryInput(kind="fact", text="Reservoir capacity increased."),
+                    MemoryEntryInput(kind="fact", text="Quality sampling changed."),
                 ),
                 mode="append",
             )
@@ -163,3 +166,15 @@ async def test_seekdb_hybrid_retains_a_semantic_neighbor_at_the_result_boundary(
             assert hybrid.hits[1].matched_by == ("vector",)
             assert hybrid.hits[1].memory_ref == head.as_ref()
             assert hybrid.hits[0].score >= hybrid.hits[1].score
+
+            query = "water supply quality"
+            full = await memory.search(query, memories=(head,), mode="hybrid", limit=3)
+            smaller = await memory.search(query, memories=(head,), mode="hybrid", limit=2)
+            assert full.hits[:2] == smaller.hits
+            assert [hit.text for hit in full.hits] == [
+                "Water supply changed.",
+                "Reservoir capacity increased.",
+                "Quality sampling changed.",
+            ]
+            assert full.hits[-1].matched_by == ("fts", "vector")
+            assert full.hits[-1].score <= full.hits[-2].score

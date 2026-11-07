@@ -768,7 +768,7 @@ class MemoryService:
         semantic_reserve = (
             channels.vector if channels.retain_semantic_tail and admission is None and selected_mode == "hybrid" else ()
         )
-        hits, additional_admissions = retain_semantic_tail(hits, semantic_reserve, limit=coarse_limit)
+        hits, additional_admissions = retain_semantic_tail(hits, semantic_reserve, fts=channels.fts, limit=coarse_limit)
         return await self._reranked_search_result(
             mode=selected_mode,
             query=normalized_query,
