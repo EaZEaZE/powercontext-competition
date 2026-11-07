@@ -108,7 +108,7 @@ from powercontext.builtin.inference import (
     embed_query,
 )
 from powercontext.builtin.tags import TagFilter
-from powercontext.errors import RevisionConflictError
+from powercontext.errors import ArtifactNotFoundError, RevisionConflictError
 from powercontext.sources import (
     TEXT_EVIDENCE_PROJECTION_KEY,
     Source,
@@ -928,9 +928,17 @@ class MemoryService:
 
     async def _validate_search_heads(self, memories: tuple[Memory, ...]) -> None:
         for memory in memories:
-            exact = await self._backend.get(memory.as_ref())
-            latest = await self._backend.latest(memory.artifact_id)
-            if exact != memory or exact.as_ref() != latest.as_ref():
+            reference = memory.as_ref()
+            try:
+                latest = await self._backend.latest(memory.artifact_id)
+            except ArtifactNotFoundError:
+                await self._backend.get(reference)
+                raise
+            if latest.as_ref() != reference:
+                # Distinguish an existing historical revision from a missing one.
+                await self._backend.get(reference)
+                raise CapabilityNotSupportedError("head")
+            if latest != memory:
                 raise CapabilityNotSupportedError("head")
 
     async def _select_search_mode(
