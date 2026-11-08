@@ -588,7 +588,11 @@ def _fts_candidates(scope_id: str, request: MemorySearchRequest, *, include_body
             )
         )
     if not include_body:
-        return statement.add_columns(score.label("relevance"))
+        # A selective scope can otherwise make seekdb choose a scalar index
+        # and evaluate MATCH as a filter instead of using text retrieval.
+        return statement.add_columns(score.label("relevance")).with_hint(
+            heads, f"FORCE INDEX ({_OCEANBASE_FTS_INDEX_NAME})", dialect_name="mysql"
+        )
     versions = MEMORY_ENTRY_VERSIONS_TABLE
     return statement.add_columns(versions.c.text).join(
         versions,

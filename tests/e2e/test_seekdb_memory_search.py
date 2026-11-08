@@ -178,3 +178,48 @@ async def test_seekdb_hybrid_retains_a_semantic_neighbor_at_the_result_boundary(
             ]
             assert full.hits[-1].matched_by == ("fts", "vector")
             assert full.hits[-1].score <= full.hits[-2].score
+
+
+@pytest.mark.asyncio
+async def test_seekdb_hybrid_uses_text_index_when_the_scope_is_selective() -> None:
+    pytest.importorskip("pylibseekdb")
+    with tempfile.TemporaryDirectory(prefix="pc-memory-") as directory:
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SeekDBConfig(path=Path(directory) / "db")), embedding_model=_Embedding()
+        ) as contexts:
+            memory = (await contexts.get("target")).artifacts.memory
+            outside = (await contexts.get("outside")).artifacts.memory
+            head = await memory.remember(
+                memory=None,
+                entries=(MemoryEntryInput(kind="fact", text="Alpha in the selected scope."),),
+                mode="append",
+            )
+            await outside.remember(
+                memory=None,
+                entries=tuple(MemoryEntryInput(kind="fact", text=f"Alpha outside record {i}.") for i in range(240)),
+                mode="append",
+            )
+            assert head is not None
+            statements = []
+
+            def record(_connection, _cursor, statement, parameters, _context, _executemany) -> None:
+                if "AGAINST" in statement.upper() or "l2_distance" in statement.lower():
+                    statements.append((statement, parameters))
+
+            event.listen(Engine, "before_cursor_execute", record)
+            try:
+                result = await memory.search("alpha", memories=(head,), mode="hybrid", limit=5)
+            finally:
+                event.remove(Engine, "before_cursor_execute", record)
+
+            assert [(hit.text, hit.memory_ref, hit.matched_by) for hit in result.hits] == [
+                ("Alpha in the selected scope.", head.as_ref(), ("fts", "vector"))
+            ]
+            assert len(statements) == 1
+            statement, parameters = statements[0]
+            async with contexts.database.transaction() as connection:
+                plan = "\n".join(
+                    str(row[0]) for row in (await connection.exec_driver_sql(f"EXPLAIN {statement}", parameters)).all()
+                )
+            assert "TEXT RETRIEVAL SCAN" in plan
+            assert "VECTOR INDEX" in plan
