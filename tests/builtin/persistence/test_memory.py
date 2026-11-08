@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from sqlalchemy import BigInteger, DateTime, Integer, String
 from sqlalchemy.dialects import mysql
 from sqlalchemy.schema import CreateTable, ForeignKeyConstraint, PrimaryKeyConstraint, UniqueConstraint
 
-from powercontext.builtin.artifacts.memory import MemoryEntryInput
+from powercontext.builtin.artifacts.memory import CapabilityNotSupportedError, MemoryEntryInput
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.persistence.tables import (
     MEMORY_ENTRY_HEADS_TABLE,
@@ -28,6 +29,7 @@ from powercontext.builtin.persistence.tables import (
 )
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
 from powercontext.builtin.sources import ContentCapture, ContentSource
+from powercontext.errors import ArtifactNotFoundError
 
 _INNODB_MAX_INDEX_BYTES = 3072
 
@@ -188,5 +190,38 @@ def test_scope_bound_contexts_do_not_share_rows() -> None:
             assert all(isinstance(source, ContentSource) for source in (*left_sources, *right_sources))
             assert tuple(source.content for source in left_sources if isinstance(source, ContentSource)) == ("left",)
             assert tuple(source.content for source in right_sources if isinstance(source, ContentSource)) == ("right",)
+
+    asyncio.run(scenario())
+
+
+def test_memory_search_validates_current_revision_and_complete_snapshot() -> None:
+    async def scenario() -> None:
+        async with open_builtin_contexts(BuiltinConfig(database=SQLiteConfig())) as contexts:
+            service = (await contexts.get("project")).artifacts.memory
+            first = await service.remember(
+                memory=None,
+                entries=(MemoryEntryInput(kind="fact", text="Stable searchable fact."),),
+                mode="append",
+            )
+            assert first is not None
+            current = await service.remember(
+                memory=first,
+                entries=(MemoryEntryInput(kind="fact", text="Another searchable fact."),),
+                mode="append",
+            )
+            assert current is not None
+            for invalid in (
+                current.model_copy(update={"revision": current.revision + 1}),
+                current.model_copy(update={"artifact_id": "absent"}),
+            ):
+                with pytest.raises(ArtifactNotFoundError):
+                    await service.search("searchable", memories=(invalid,), mode="fts")
+            for invalid in (first, current.model_copy(update={"content": first.content})):
+                with pytest.raises(CapabilityNotSupportedError, match="head"):
+                    await service.search("searchable", memories=(invalid,), mode="fts")
+            result = await service.search("stable", memories=(current,), mode="fts")
+            assert [(hit.text, hit.memory_ref) for hit in result.hits] == [
+                ("Stable searchable fact.", current.as_ref())
+            ]
 
     asyncio.run(scenario())

@@ -28,6 +28,7 @@ from sqlalchemy import (
     bindparam,
     column,
     delete,
+    func,
     insert,
     literal,
     null,
@@ -347,7 +348,9 @@ class OceanBaseMemoryVectorIndex:
     ) -> MemorySearchChannels:
         if request.mode not in {"vector", "hybrid"}:
             return MemorySearchChannels()
-        parameters = await self._search_parameters(connection, scope_id, request)
+        parameters = self._search_parameters(scope_id, request)
+        if not await self.vector_complete(connection, scope_id, request.memories, self.profile):
+            raise CapabilityNotSupportedError("vector")
         rows = (
             await connection.execute(
                 self._search_sql if request.tag_filter is None else self._tagged_search_sql,
@@ -356,16 +359,9 @@ class OceanBaseMemoryVectorIndex:
         ).mappings()
         return MemorySearchChannels(vector=memory_channel_hits(rows, request.memories))
 
-    async def _search_parameters(
-        self,
-        connection: AsyncConnection,
-        scope_id: str,
-        request: MemorySearchRequest,
-    ) -> dict[str, Any]:
+    def _search_parameters(self, scope_id: str, request: MemorySearchRequest) -> dict[str, Any]:
         if request.embedding_profile != self.profile or request.query_vector is None:
             raise CapabilityNotSupportedError("embedding-profile")
-        if not await self.vector_complete(connection, scope_id, request.memories, self.profile):
-            raise CapabilityNotSupportedError("vector")
         return {
             "scope_id": scope_id,
             "memory_artifact_ids": tuple(memory.artifact_id for memory in request.memories),
@@ -484,17 +480,14 @@ class SeekDBMemoryIndex(CompositeMemoryIndex):
     def __init__(self, profile: EmbeddingProfile) -> None:
         self._vector = OceanBaseMemoryVectorIndex(profile)
         super().__init__(OceanBaseMemoryFTSIndex(), self._vector)
-        self._vector_queries = {
-            tagged: _vector_candidates(
-                profile,
-                tag_filter_sql=_SEEKDB_VECTOR_TAG_FILTER if tagged else "",
-                approximate=True,
-                include_body=False,
-            )
+        self._untagged_candidates = self._vector._search_sql.columns(
+            *(column(name) for name in _CANDIDATE_COLUMNS), column("text"), column("distance")
+        ).subquery("semantic")
+        self._tagged_candidates = (
+            _vector_candidates(profile, tag_filter_sql=_SEEKDB_VECTOR_TAG_FILTER, approximate=True, include_body=False)
             .columns(*(column(name) for name in _CANDIDATE_COLUMNS), column("distance"))
             .subquery("semantic")
-            for tagged in (False, True)
-        }
+        )
 
     @override
     async def search(
@@ -507,9 +500,11 @@ class SeekDBMemoryIndex(CompositeMemoryIndex):
         if request.mode != "hybrid":
             return await super().search(connection, scope_id, request)
 
-        parameters = await self._vector._search_parameters(connection, scope_id, request)
+        # Mode selection has already checked embedding completeness. The
+        # repository validates the requested heads around this statement.
+        parameters = self._vector._search_parameters(scope_id, request)
         lexical = _fts_candidates(scope_id, request, include_body=False).subquery("lexical")
-        semantic = self._vector_queries[request.tag_filter is not None]
+        semantic = self._untagged_candidates if request.tag_filter is None else self._tagged_candidates
 
         # Each channel selects its own top-k before UNION ALL. Restore both
         # rankings explicitly because the union does not preserve input order.
@@ -519,8 +514,17 @@ class SeekDBMemoryIndex(CompositeMemoryIndex):
                 lexical.c.relevance,
                 *(lexical.c[name] for name in _CANDIDATE_COLUMNS),
                 null().label("distance"),
+                null().label("semantic_rank"),
             ),
-            select(literal("vector"), null(), *semantic.c),
+            select(
+                literal("vector"),
+                null(),
+                *(semantic.c[name] for name in _CANDIDATE_COLUMNS),
+                semantic.c.distance,
+                # The native top-k subquery already emits rows in distance
+                # order. Capture its tie order before the union and body join.
+                func.row_number().over(),
+            ),
         ).subquery()
         # Fetch exact bodies only for candidates from the two limited scans.
         versions = MEMORY_ENTRY_VERSIONS_TABLE
@@ -536,6 +540,7 @@ class SeekDBMemoryIndex(CompositeMemoryIndex):
                 candidates.c.channel,
                 candidates.c.relevance.desc(),
                 candidates.c.distance,
+                candidates.c.semantic_rank,
                 candidates.c.memory_artifact_id,
                 candidates.c.entry_id,
                 candidates.c.entry_version_id,
@@ -582,7 +587,11 @@ def _fts_candidates(scope_id: str, request: MemorySearchRequest, *, include_body
             )
         )
     if not include_body:
-        return statement.add_columns(score.label("relevance"))
+        # A selective scope can otherwise make seekdb choose a scalar index
+        # and evaluate MATCH as a filter instead of using text retrieval.
+        return statement.add_columns(score.label("relevance")).with_hint(
+            heads, f"FORCE INDEX ({_OCEANBASE_FTS_INDEX_NAME})", dialect_name="mysql"
+        )
     versions = MEMORY_ENTRY_VERSIONS_TABLE
     return statement.add_columns(versions.c.text).join(
         versions,

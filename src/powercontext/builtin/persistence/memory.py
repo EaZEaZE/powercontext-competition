@@ -62,6 +62,7 @@ from powercontext.builtin.persistence.memory_index import MemoryIndex, NoMemoryI
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
     ARTIFACT_TAGS_TABLE,
+    ARTIFACTS_TABLE,
     MEMORY_ENTRY_HEADS_TABLE,
     MEMORY_ENTRY_VERSIONS_TABLE,
 )
@@ -340,22 +341,32 @@ class RelationalMemoryBackend:
         connection: AsyncConnection,
         memories: tuple[ArtifactRef, ...],
     ) -> None:
-        """Reject a projection read when any requested head has advanced."""
+        """Verify the exact revision and current pointer without reloading their contents."""
 
+        heads = ARTIFACT_HEADS_TABLE
+        revisions = ARTIFACTS_TABLE
         for memory in memories:
-            try:
-                exact = _require_memory(await self._artifacts.get(connection, self._scope_id, memory))
-                latest = _require_memory(
-                    await self._artifacts.latest(
-                        connection,
-                        self._scope_id,
-                        Memory.family,
-                        memory.artifact_id,
-                    )
+            if memory.family != Memory.family:
+                raise ArtifactNotFoundError(memory)
+            current = await connection.scalar(
+                select(heads.c.revision)
+                .join_from(
+                    revisions,
+                    heads,
+                    (revisions.c.scope_id == heads.c.scope_id)
+                    & (revisions.c.family == heads.c.family)
+                    & (revisions.c.artifact_id == heads.c.artifact_id),
                 )
-            except RepositoryNotFoundError:
-                raise ArtifactNotFoundError(memory) from None
-            if exact.as_ref() != latest.as_ref():
+                .where(
+                    revisions.c.scope_id == self._scope_id,
+                    revisions.c.family == Memory.family,
+                    revisions.c.artifact_id == memory.artifact_id,
+                    revisions.c.revision == memory.revision,
+                )
+            )
+            if current is None:
+                raise ArtifactNotFoundError(memory)
+            if int(current) != memory.revision:
                 raise InvalidMemoryCitationError("memory-mismatch")
 
     async def expand(self, hits: tuple[MemoryHit, ...], /) -> tuple[MemoryEntryVersion, ...]:

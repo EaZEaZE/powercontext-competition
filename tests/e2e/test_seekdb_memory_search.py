@@ -24,6 +24,7 @@ from powercontext.builtin.artifacts.memory import EmbeddingProfile, MemoryEntryI
 from powercontext.builtin.inference import EmbeddingResult
 from powercontext.builtin.persistence.seekdb import SeekDBConfig
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+from powercontext.builtin.runtime.relational import RelationalContexts
 from powercontext.builtin.tags import MemoryEntryTagTarget, TagFilter
 
 
@@ -97,3 +98,128 @@ async def test_seekdb_hybrid_vector_limit_applies_after_tag_filtering() -> None:
                 )
             assert "TEXT RETRIEVAL SCAN" in plan
             assert "VECTOR INDEX" in plan
+
+            any_tag = await memory.search(
+                "alpha",
+                memories=(head,),
+                mode="hybrid",
+                limit=1,
+                tag_filter=TagFilter(tags=("missing", "selected"), match="any"),
+            )
+            assert any_tag.hits == result.hits
+            no_tag = await memory.search(
+                "alpha", memories=(head,), mode="hybrid", limit=1, tag_filter=TagFilter(tags=("missing",))
+            )
+            assert no_tag.hits == ()
+
+
+@pytest.mark.asyncio
+async def test_seekdb_hybrid_preserves_native_vector_tie_order() -> None:
+    pytest.importorskip("pylibseekdb")
+    with tempfile.TemporaryDirectory(prefix="pc-memory-") as directory:
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SeekDBConfig(path=Path(directory) / "db")), embedding_model=_Embedding()
+        ) as contexts:
+            memory = (await contexts.get("project")).artifacts.memory
+            head = await memory.remember(
+                memory=None,
+                entries=tuple(MemoryEntryInput(kind="fact", text=f"Equal distance record {i}.") for i in range(50)),
+                mode="append",
+            )
+            assert head is not None
+
+            # There is no lexical overlap, so hybrid should keep the vector
+            # ranking even when the result limit cuts through equal distances.
+            query = "unmatched"
+            vector = await memory.search(query, memories=(head,), mode="vector", limit=10)
+            hybrid = await memory.search(query, memories=(head,), mode="hybrid", limit=10)
+            repeated = await memory.search(query, memories=(head,), mode="hybrid", limit=10)
+            assert len(vector.hits) == 10
+            assert hybrid.hits == vector.hits == repeated.hits
+
+
+@pytest.mark.asyncio
+async def test_seekdb_hybrid_uses_text_index_when_the_scope_is_selective() -> None:
+    pytest.importorskip("pylibseekdb")
+    with tempfile.TemporaryDirectory(prefix="pc-memory-") as directory:
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SeekDBConfig(path=Path(directory) / "db")), embedding_model=_Embedding()
+        ) as contexts:
+            memory = (await contexts.get("target")).artifacts.memory
+            outside = (await contexts.get("outside")).artifacts.memory
+            head = await memory.remember(
+                memory=None,
+                entries=(MemoryEntryInput(kind="fact", text="Alpha in the selected scope."),),
+                mode="append",
+            )
+            await outside.remember(
+                memory=None,
+                entries=tuple(MemoryEntryInput(kind="fact", text=f"Alpha outside record {i}.") for i in range(240)),
+                mode="append",
+            )
+            assert head is not None
+            statements = []
+
+            def record(_connection, _cursor, statement, parameters, _context, _executemany) -> None:
+                if "AGAINST" in statement.upper() or "l2_distance" in statement.lower():
+                    statements.append((statement, parameters))
+
+            event.listen(Engine, "before_cursor_execute", record)
+            try:
+                result = await memory.search("alpha", memories=(head,), mode="hybrid", limit=5)
+            finally:
+                event.remove(Engine, "before_cursor_execute", record)
+
+            assert [(hit.text, hit.memory_ref, hit.matched_by) for hit in result.hits] == [
+                ("Alpha in the selected scope.", head.as_ref(), ("fts", "vector"))
+            ]
+            assert len(statements) == 1
+            statement, parameters = statements[0]
+            async with contexts.database.transaction() as connection:
+                plan = "\n".join(
+                    str(row[0]) for row in (await connection.exec_driver_sql(f"EXPLAIN {statement}", parameters)).all()
+                )
+            assert "TEXT RETRIEVAL SCAN" in plan
+            assert "VECTOR INDEX" in plan
+
+
+@pytest.mark.asyncio
+async def test_seekdb_hybrid_filters_selected_artifacts_before_limiting() -> None:
+    pytest.importorskip("pylibseekdb")
+    with tempfile.TemporaryDirectory(prefix="pc-memory-") as directory:
+        embedding = _Embedding()
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SeekDBConfig(path=Path(directory) / "db")), embedding_model=embedding
+        ) as contexts:
+            alternate = RelationalContexts(
+                database=contexts.database,
+                index=contexts.index,
+                embedding_model=embedding,
+                memory_artifact_id="alternate",
+            )
+            try:
+                memory = (await contexts.get("project")).artifacts.memory
+                other = (await alternate.get("project")).artifacts.memory
+                head = await memory.remember(
+                    memory=None,
+                    entries=(MemoryEntryInput(kind="fact", text="Relevant semantic record."),),
+                    mode="append",
+                )
+                other_head = await other.remember(
+                    memory=None,
+                    entries=tuple(MemoryEntryInput(kind="fact", text=f"Alpha closer record {i}.") for i in range(40)),
+                    mode="append",
+                )
+                assert head is not None and other_head is not None
+                isolated = await memory.search("alpha", memories=(head,), mode="hybrid", limit=1)
+                assert [(hit.text, hit.memory_ref, hit.matched_by) for hit in isolated.hits] == [
+                    ("Relevant semantic record.", head.as_ref(), ("vector",))
+                ]
+                combined = await memory.search("alpha", memories=(head, other_head), mode="hybrid", limit=50)
+                assert len(combined.hits) == 41
+                assert {hit.memory_ref.artifact_id for hit in combined.hits} == {"memory", "alternate"}
+                assert len({(hit.memory_ref.artifact_id, hit.entry_id) for hit in combined.hits}) == 41
+                expanded = await memory.expand(combined.hits)
+                assert [entry.text for entry in expanded] == [hit.text for hit in combined.hits]
+            finally:
+                await alternate.aclose_usage_recorder()
