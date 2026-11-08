@@ -58,7 +58,6 @@ from powercontext.builtin.artifacts.memory.fusion import (
     admit_fts_candidates,
     admit_vector_candidates,
     fuse_rankings,
-    retain_semantic_tail,
 )
 from powercontext.builtin.artifacts.memory.models import (
     EmbeddingProfile,
@@ -765,10 +764,6 @@ class MemoryService:
             vector=admitted_vector if selected_mode in {"vector", "hybrid"} else (),
             limit=coarse_limit,
         )
-        semantic_reserve = (
-            channels.vector if channels.retain_semantic_tail and admission is None and selected_mode == "hybrid" else ()
-        )
-        hits, additional_admissions = retain_semantic_tail(hits, semantic_reserve, fts=channels.fts, limit=coarse_limit)
         return await self._reranked_search_result(
             mode=selected_mode,
             query=normalized_query,
@@ -778,7 +773,7 @@ class MemoryService:
                 family=Memory.family,
                 scope_id="",
                 retrieved=len(channels.fts) + len(channels.vector),
-                admitted=len(admitted_fts) + len(admitted_vector) + additional_admissions,
+                admitted=len(admitted_fts) + len(admitted_vector),
             ),
             embedding_calls=embedding_calls,
             query_embedding=resolved_embedding,
