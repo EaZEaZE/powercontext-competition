@@ -31,6 +31,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.mysql import match
 from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.sql.elements import TextClause
+from typing_extensions import override
 
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.memory import (
@@ -42,7 +44,7 @@ from powercontext.builtin.artifacts.memory import (
     MemorySearchRequest,
 )
 from powercontext.builtin.artifacts.memory.canonical import embedding_content_hash, validate_embedding
-from powercontext.builtin.persistence.memory_index import memory_channel_hits
+from powercontext.builtin.persistence.memory_index import CompositeMemoryIndex, memory_channel_hits
 from powercontext.builtin.persistence.tables import (
     ARTIFACT_HEADS_TABLE,
     MAX_MEMORY_ENTRY_ID_LENGTH,
@@ -97,6 +99,81 @@ WHERE m.scope_id = :scope_id
 ORDER BY l2_distance(m.embedding, :query_vector) APPROXIMATE
 LIMIT :candidate_limit
 """
+
+
+# An uncorrelated membership test is pushed into seekdb's vector scan.
+# A correlated tag subquery can instead filter *after* the ANN limit.
+_SEEKDB_VECTOR_TAG_PREDICATE = """
+  AND JSON_CONTAINS_PATH(
+    (SELECT JSON_OBJECTAGG(eligible.vector_id, 1)
+     FROM (
+        SELECT v.vector_id
+        FROM pc_artifact_tags AS t
+        JOIN pc_memory_vector_entries AS v
+          ON v.scope_id = t.scope_id
+         AND v.memory_artifact_id = t.artifact_id
+         AND v.entry_id = t.target_id
+        WHERE t.scope_id = :scope_id
+          AND t.artifact_id IN :memory_artifact_ids
+          AND t.family = 'memory' AND t.target_type = 'memory_entry'
+          AND t.tag_key_hash IN :tag_hashes AND t.tag_key IN :tag_keys
+        GROUP BY v.vector_id
+        HAVING COUNT(*) >= :tag_minimum
+     ) AS eligible),
+    'one', CONCAT('$."', m.vector_id, '"'))
+"""
+
+_SEEKDB_HYBRID_SQL = """
+WITH lexical_top AS (
+    SELECT m.memory_artifact_id, m.head_revision, m.entry_id, m.entry_version_id,
+           MATCH(m.searchable_text) AGAINST (:query IN BOOLEAN MODE) AS relevance
+    FROM pc_memory_entry_heads AS m FORCE INDEX ({fts_index})
+    WHERE m.scope_id = :scope_id
+      AND m.memory_artifact_id IN :memory_artifact_ids
+      AND MATCH(m.searchable_text) AGAINST (:query IN BOOLEAN MODE)
+      {lexical_filter}
+    ORDER BY relevance DESC, m.memory_artifact_id, m.entry_id, m.entry_version_id
+    LIMIT :candidate_limit
+), semantic_top AS (
+    {semantic_sql}
+)
+SELECT 'fts' AS channel, l.memory_artifact_id, l.head_revision, l.entry_id,
+       l.entry_version_id, v.text, NULL AS distance,
+       ROW_NUMBER() OVER (
+           ORDER BY l.relevance DESC, l.memory_artifact_id, l.entry_id, l.entry_version_id
+       ) AS channel_rank
+FROM lexical_top AS l
+JOIN pc_memory_entry_versions AS v
+  ON v.scope_id = :scope_id
+ AND v.memory_artifact_id = l.memory_artifact_id
+ AND v.entry_version_id = l.entry_version_id
+UNION ALL
+SELECT 'vector', s.memory_artifact_id, s.head_revision, s.entry_id,
+       s.entry_version_id, s.text, s.distance, ROW_NUMBER() OVER ()
+FROM semantic_top AS s
+ORDER BY channel, distance, channel_rank
+"""
+
+
+def _seekdb_hybrid_statement(profile: EmbeddingProfile, *, tagged: bool) -> TextClause:
+    # Keep the frozen ANN query shape, including its native order for ties.
+    # Number those rows before UNION ALL, which makes no ordering guarantee.
+    semantic_sql = _OCEANBASE_VECTOR_SEARCH_SQL
+    if tagged:
+        semantic_sql = semantic_sql.replace("ORDER BY", _SEEKDB_VECTOR_TAG_PREDICATE + "ORDER BY")
+    statement = text(
+        _SEEKDB_HYBRID_SQL.format(
+            fts_index=_OCEANBASE_FTS_INDEX_NAME,
+            lexical_filter=memory_tag_sql("m") if tagged else "",
+            semantic_sql=semantic_sql,
+        )
+    ).bindparams(
+        bindparam("memory_artifact_ids", expanding=True),
+        bindparam("query_vector", type_=VECTOR(profile.dimension)),
+    )
+    if tagged:
+        statement = statement.bindparams(bindparam("tag_keys", expanding=True), bindparam("tag_hashes", expanding=True))
+    return statement
 
 
 class OceanBaseMemoryFTSIndex:
@@ -493,6 +570,58 @@ class OceanBaseMemoryVectorIndex:
                 )
             )
         return tuple(hydrated)
+
+
+class SeekDBMemoryIndex(CompositeMemoryIndex):
+    """Use a single indexed statement for seekdb's two hybrid candidate lists."""
+
+    def __init__(self, profile: EmbeddingProfile) -> None:
+        super().__init__(OceanBaseMemoryFTSIndex(), OceanBaseMemoryVectorIndex(profile))
+        self._profile = profile
+        self._hybrid = _seekdb_hybrid_statement(profile, tagged=False)
+        self._tagged_hybrid = _seekdb_hybrid_statement(profile, tagged=True)
+
+    @override
+    async def search(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        request: MemorySearchRequest,
+        /,
+    ) -> MemorySearchChannels:
+        if request.mode != "hybrid":
+            return await super().search(connection, scope_id, request)
+        if request.embedding_profile != self._profile or request.query_vector is None:
+            raise CapabilityNotSupportedError("embedding-profile")
+
+        # Mode selection checks embedding completeness. The repository checks
+        # that the requested heads still match on both sides of this read.
+        statement = self._hybrid if request.tag_filter is None else self._tagged_hybrid
+        result = await connection.execute(
+            statement,
+            {
+                "scope_id": scope_id,
+                "memory_artifact_ids": tuple(memory.artifact_id for memory in request.memories),
+                "query": request.analyzed_query,
+                "query_vector": validate_embedding(request.query_vector, dimension=self._profile.dimension),
+                "candidate_limit": request.candidate_limit,
+                **memory_tag_parameters(request.tag_filter),
+            },
+        )
+        rows = result.mappings().all()
+        return MemorySearchChannels(
+            fts=memory_channel_hits((row for row in rows if row["channel"] == "fts"), request.memories),
+            vector=memory_channel_hits((row for row in rows if row["channel"] == "vector"), request.memories),
+        )
+
+
+def oceanbase_memory_index(profile: EmbeddingProfile | None, *, seekdb: bool) -> CompositeMemoryIndex:
+    """Select the native hybrid strategy only for embedded seekdb."""
+    if profile is None:
+        return CompositeMemoryIndex(OceanBaseMemoryFTSIndex())
+    if seekdb:
+        return SeekDBMemoryIndex(profile)
+    return CompositeMemoryIndex(OceanBaseMemoryFTSIndex(), OceanBaseMemoryVectorIndex(profile))
 
 
 def _embedding_hash(profile: EmbeddingProfile, entry_hash: str) -> str:
