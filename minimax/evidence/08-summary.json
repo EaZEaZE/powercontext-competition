@@ -1,0 +1,10 @@
+{
+  "generated_files": [
+    "src/inventory/service.py",
+    "tests/test_ttl.py"
+  ],
+  "after_exit": "exit=0",
+  "repair_rounds": 0,
+  "regression_ok": true,
+  "feature_ok": true
+}
