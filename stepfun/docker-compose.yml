@@ -1,0 +1,14 @@
+services:
+  seekdb:
+    image: oceanbase/seekdb:latest
+    container_name: stepfun-seekdb
+    ports:
+      - "2881:2881"
+    environment:
+      - SEEKDB_ROOT_PASSWORD=
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "seekdb-client", "-h127.0.0.1", "-P2881", "-uroot", "-e", "SELECT 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
