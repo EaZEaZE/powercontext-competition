@@ -91,6 +91,8 @@ collection.hybridSearch({
 
 ## 运行方式
 
+### 方式 A：Node 后端 + seekdb 服务（完整混合检索）
+
 ```bash
 # 1. 启动 seekdb
 docker compose up -d
@@ -102,6 +104,44 @@ cd backend && npm install && npm start
 open http://localhost:3000
 ```
 
+### 方式 B：Python 后端 + pyseekdb 嵌入式（无需 Docker / 无 node 环境）
+
+适用于只有 Python 的机器（如比赛提供的 Jupyter 实例）：
+
+```bash
+pip install fastapi uvicorn pyseekdb
+
+# 启动（数据落在本地目录，不需要 seekdb 服务进程）
+SEEKDB_PATH=/root/stepfun-data PORT=3000 python backend-py/app.py
+
+# 浏览器访问 http://localhost:3000
+```
+
+### 端到端验证
+
+```bash
+# 模拟浏览器端计算 embedding 后调用 /api/add 与 /api/search
+python backend-py/verify.py http://127.0.0.1:3000
+```
+
+实测结果（AMD Jupyter 实例，pyseekdb 1.4.0.post1，384 维 HNSW cosine）：
+
+```
+== 2. 导入 4 条文档（embedding 在本地计算）==
+{"ok": true, "count": 4}
+== 3. 统计 ==
+{"count": 8, "collection": "stepfun_kb", "dim": 384}
+== 4. 检索验证 ==
+[PASS] HNSW 向量索引支持哪些距离度量  -> 3.1ms  top=OceanBase seekdb 支持 HNSW 向量索引…
+[PASS] 量化后模型多大                -> 2.8ms  top=INT8 量化把模型体积从 90MB 压到 23MB…
+[PASS] 浏览器里跑模型用什么库          -> 2.8ms  top=Transformers.js 可以在浏览器里运行…
+结果：3/3 通过
+```
+
+原始输出见 `evidence/verify-python-embedded.txt`。
+
+> 说明：方式 B 的 Python 后端提供向量检索；全文 + 向量 RRF 混合检索由方式 A 的 seekdb-js 实现。
+
 ## 文件结构
 
 ```
@@ -109,7 +149,12 @@ stepfun/
 ├── docker-compose.yml      # seekdb 服务
 ├── backend/
 │   ├── package.json
-│   └── server.js           # seekdb-js REST 代理
+│   └── server.js           # seekdb-js REST 代理（向量 + 全文 RRF）
+├── backend-py/
+│   ├── app.py              # pyseekdb 嵌入式后端（无 Docker）
+│   └── verify.py           # 端到端验证脚本
+├── evidence/
+│   └── verify-python-embedded.txt
 └── frontend/
     └── index.html          # Transformers.js + UI
 ```
