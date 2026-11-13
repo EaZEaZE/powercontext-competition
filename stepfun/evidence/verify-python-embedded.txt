@@ -1,0 +1,15 @@
+== 1. 服务状态 ==
+{"count": 4, "collection": "stepfun_kb", "dim": 384}
+
+== 2. 导入 4 条文档（embedding 在本地计算）==
+{"ok": true, "count": 4}
+
+== 3. 统计 ==
+{"count": 8, "collection": "stepfun_kb", "dim": 384}
+
+== 4. 检索验证 ==
+[PASS] HNSW 向量索引支持哪些距离度量            -> 命中=3.100ms top=OceanBase seekdb 支持 HNSW 向量索引，距离度量可选 c
+[PASS] 量化后模型多大                      -> 命中=2.800ms top=INT8 量化把模型体积从 90MB 压到 23MB，检索质量偏差不超过 0
+[PASS] 浏览器里跑模型用什么库                  -> 命中=2.800ms top=Transformers.js 可以在浏览器里运行 all-MiniLM-L
+
+结果：3/3 通过
