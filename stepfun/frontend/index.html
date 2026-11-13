@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>端侧知识库 · 阶跃星辰 × seekdb</title>
+<script type="module">
+  import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js";
+
+  // 优先 WebGPU，不可用则降级 WASM
+  env.backends.onnx.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/";
+
+  let extractor = null;
+  let backendType = "loading";
+  const MODEL_ID = "Xenova/all-MiniLM-L6-v2";
+
+  const $ = (id) => document.getElementById(id);
+  const log = (msg) => {
+    const el = $("log");
+    const t = new Date().toLocaleTimeString();
+    el.value += `[${t}] ${msg}\n`;
+    el.scrollTop = el.scrollHeight;
+  };
+
+  async function loadModel() {
+    log("正在加载模型（INT8 量化）...");
+    const t0 = performance.now();
+    try {
+      // 尝试 WebGPU
+      env.backends.onnx.wasm.numThreads = 4;
+      extractor = await pipeline("feature-extraction", MODEL_ID, {
+        quantized: true, // INT8
+        dtype: "fp32",
+      });
+      // 检测实际后端
+      backendType = env.backends.onnx.wasm ? "WASM" : "unknown";
+      // Transformers.js 2.x 的 WebGPU 通过 onnxruntime-web
+      const backendInfo = await env.getBackend();
+      if (backendInfo) backendType = backendInfo;
+    } catch (e) {
+      log("WebGPU 不可用，降级 WASM: " + e.message);
+      env.allowLocalModels = false;
+      extractor = await pipeline("feature-extraction", MODEL_ID, {
+        quantized: true,
+      });
+      backendType = "WASM";
+    }
+    const t1 = performance.now();
+    $("model-status").textContent = `已加载 · ${backendType} 后端 · INT8 量化`;
+    $("model-status").className = "badge ok";
+    log(`模型加载完成，后端=${backendType}，耗时 ${(t1 - t0).toFixed(0)}ms`);
+  }
+
+  // 计算单条文本的 embedding（mean pooling）
+  async function embed(text) {
+    const output = await extractor(text, { pooling: "mean", normalize: true });
+    return Array.from(output.data);
+  }
+
+  // 批量计算 embeddings（性能优化：批处理）
+  async function embedBatch(texts, batchSize = 8) {
+    const all = [];
+    for (let i = 0; i < texts.length; i += batchSize) {
+      const batch = texts.slice(i, i + batchSize);
+      const embeddings = await Promise.all(batch.map((t) => embed(t)));
+      all.push(...embeddings);
+    }
+    return all;
+  }
+
+  // 文本切块
+  function chunkText(text, chunkSize = 300, overlap = 50) {
+    const sentences = text.replace(/\n+/g, " ").split(/(?<=[。！？.!?])\s+/);
+    const chunks = [];
+    let buf = "";
+    for (const s of sentences) {
+      if ((buf + s).length > chunkSize && buf) {
+        chunks.push(buf.trim());
+        buf = s;
+      } else {
+        buf += (buf ? " " : "") + s;
+      }
+    }
+    if (buf.trim()) chunks.push(buf.trim());
+    return chunks;
+  }
+
+  // 导入文档
+  $("btn-import").onclick = async () => {
+    const text = $("input-text").value.trim();
+    if (!text) return alert("请输入或粘贴文本");
+    if (!extractor) return alert("模型尚未加载完成");
+
+    const chunks = chunkText(text);
+    log(`文本切分为 ${chunks.length} 个块，开始本地向量化...`);
+    const t0 = performance.now();
+    const embeddings = await embedBatch(chunks);
+    const t1 = performance.now();
+    log(`向量化完成 ${chunks.length} 条，耗时 ${(t1 - t0).toFixed(0)}ms`);
+
+    const ids = chunks.map((_, i) => `doc_${Date.now()}_${i}`);
+    const metadatas = chunks.map(() => ({ source: "import", ts: Date.now() }));
+
+    const t2 = performance.now();
+    const resp = await fetch("/api/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, documents: chunks, metadatas, embeddings }),
+    });
+    const r = await resp.json();
+    const t3 = performance.now();
+    log(`写入 seekdb 完成，耗时 ${(t3 - t2).toFixed(0)}ms，结果=${r.ok ? "成功" : r.error}`);
+    $("input-text").value = "";
+  };
+
+  // 检索
+  $("btn-search").onclick = async () => {
+    const q = $("query").value.trim();
+    if (!q) return alert("请输入查询");
+    if (!extractor) return alert("模型尚未加载完成");
+
+    const t0 = performance.now();
+    const queryEmbedding = await embed(q);
+    const t1 = performance.now();
+
+    const t2 = performance.now();
+    const resp = await fetch("/api/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queryEmbedding, queryText: q, nResults: 5 }),
+    });
+    const r = await resp.json();
+    const t3 = performance.now();
+
+    $("results").innerHTML = "";
+    if (r.error) {
+      $("results").innerHTML = `<div class="error">${r.error}</div>`;
+      return;
+    }
+    $("embed-time").textContent = `${(t1 - t0).toFixed(0)}ms`;
+    $("search-time").textContent = `${r.latencyMs}ms`;
+    $("total-time").textContent = `${(t3 - t0).toFixed(0)}ms`;
+
+    r.results.forEach((item, i) => {
+      const div = document.createElement("div");
+      div.className = "result";
+      div.innerHTML = `
+        <div class="rank">#${i + 1}</div>
+        <div class="doc">${escapeHtml(item.document)}</div>
+        <div class="meta">距离 ${item.distance?.toFixed(4) || "N/A"}</div>
+      `;
+      $("results").appendChild(div);
+    });
+    log(`检索完成：返回 ${r.results.length} 条，向量化 ${(t1 - t0).toFixed(0)}ms，seekdb ${r.latencyMs}ms`);
+  };
+
+  $("btn-clear").onclick = async () => {
+    if (!confirm("确定清空知识库？")) return;
+    await fetch("/api/clear", { method: "DELETE" });
+    $("results").innerHTML = "";
+    log("知识库已清空");
+  };
+
+  // 加载示例文本
+  $("btn-sample").onclick = () => {
+    $("input-text").value = `机器学习正在改变人工智能和数据科学领域。
+Python 编程语言是机器学习开发者的必备工具。
+深度学习神经网络实现了高级 AI 应用。
+自然语言处理使用机器学习理解文本。
+计算机视觉算法使用深度学习技术处理图像。
+强化学习通过基于奖励的反馈训练智能体。
+Python 库如 TensorFlow 和 PyTorch 简化了机器学习开发。
+人工智能系统可以从大型数据集中学习。`;
+  };
+
+  function escapeHtml(s) {
+    const div = document.createElement("div");
+    div.textContent = s;
+    return div.innerHTML;
+  }
+
+  // 启动
+  loadModel();
+</script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; background: #0f172a; color: #e2e8f0; padding: 24px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 20px; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 12px; }
+  .badge.ok { background: #064e3b; color: #6ee7b7; }
+  .badge.loading { background: #78350f; color: #fbbf24; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; }
+  .card h2 { font-size: 15px; margin-bottom: 12px; color: #cbd5e1; }
+  textarea { width: 100%; height: 160px; background: #0f172a; border: 1px solid #475569; border-radius: 6px; padding: 8px; color: #e2e8f0; resize: vertical; font-size: 13px; }
+  input[type="text"] { width: 100%; background: #0f172a; border: 1px solid #475569; border-radius: 6px; padding: 8px; color: #e2e8f0; font-size: 14px; }
+  .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  button { padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .primary { background: #3b82f6; color: white; }
+  .primary:hover { background: #2563eb; }
+  .ghost { background: #334155; color: #cbd5e1; }
+  .ghost:hover { background: #475569; }
+  .danger { background: #7f1d1d; color: #fca5a5; }
+  .result { padding: 10px; border-bottom: 1px solid #334155; }
+  .result:last-child { border-bottom: none; }
+  .rank { font-size: 12px; color: #60a5fa; font-weight: 600; }
+  .doc { margin: 4px 0; font-size: 13px; line-height: 1.5; }
+  .meta { font-size: 11px; color: #64748b; }
+  .metrics { display: flex; gap: 16px; margin: 12px 0; font-size: 13px; color: #94a3b8; }
+  .metrics b { color: #e2e8f0; }
+  #log { width: 100%; height: 120px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 8px; color: #94a3b8; font-size: 12px; font-family: monospace; margin-top: 8px; }
+  .error { color: #fca5a5; padding: 10px; }
+  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <h1>端侧语义知识库</h1>
+  <div class="sub">阶跃星辰赛题 · 浏览器本地向量化（Transformers.js INT8） · seekdb 混合检索</div>
+  <div class="badge loading" id="model-status">模型加载中...</div>
+
+  <div class="grid" style="margin-top:16px;">
+    <div class="card">
+      <h2>1. 导入文档（本地向量化 → seekdb）</h2>
+      <textarea id="input-text" placeholder="粘贴或输入文本内容，支持多段落..."></textarea>
+      <div class="row">
+        <button class="primary" id="btn-import">导入并索引</button>
+        <button class="ghost" id="btn-sample">填充示例</button>
+        <button class="danger" id="btn-clear">清空知识库</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2. 混合检索（向量 + 全文，seekdb RRF 融合）</h2>
+      <input type="text" id="query" placeholder="输入查询，如：机器学习的工具" />
+      <div class="row">
+        <button class="primary" id="btn-search">检索</button>
+      </div>
+      <div class="metrics">
+        <div>本地向量化：<b id="embed-time">-</b></div>
+        <div>seekdb 检索：<b id="search-time">-</b></div>
+        <div>总计：<b id="total-time">-</b></div>
+      </div>
+      <div id="results"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h2>运行日志</h2>
+    <textarea id="log" readonly></textarea>
+  </div>
+</body>
+</html>
