@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>智研助手 · 文献与笔记问答</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", sans-serif; background: #0f172a; color: #e2e8f0; padding: 20px; }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 24px; margin-bottom: 4px; }
+  .sub { color: #94a3b8; font-size: 13px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; }
+  .card h2 { font-size: 15px; margin-bottom: 12px; color: #cbd5e1; }
+  textarea { width: 100%; min-height: 120px; background: #0f172a; border: 1px solid #475569; border-radius: 6px; padding: 8px; color: #e2e8f0; resize: vertical; font-size: 13px; }
+  input[type="text"] { width: 100%; background: #0f172a; border: 1px solid #475569; border-radius: 6px; padding: 8px; color: #e2e8f0; font-size: 14px; }
+  .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  button { padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .primary { background: #3b82f6; color: white; }
+  .primary:hover { background: #2563eb; }
+  .ghost { background: #334155; color: #cbd5e1; }
+  .answer { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 12px; margin-top: 10px; min-height: 60px; line-height: 1.6; font-size: 14px; white-space: pre-wrap; }
+  .sources { margin-top: 8px; font-size: 12px; color: #94a3b8; }
+  .source { padding: 4px 0; border-top: 1px solid #1e293b; }
+  .tag { display: inline-block; background: #1e40af; color: #93c5fd; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-right: 4px; }
+  .history { max-height: 200px; overflow-y: auto; font-size: 12px; }
+  .hist-item { padding: 6px 0; border-bottom: 1px solid #334155; }
+  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>智研助手</h1>
+  <div class="sub">基于 seekdb 语义检索 + PowerContext 记忆 + MiniMax 大模型的文献问答助手</div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>1. 导入文献/笔记</h2>
+      <input type="text" id="title" placeholder="标题（可选）" style="margin-bottom:8px;" />
+      <textarea id="doc-text" placeholder="粘贴论文摘要、笔记内容..."></textarea>
+      <div class="row">
+        <button class="primary" onclick="importDoc()">导入并索引</button>
+        <span id="import-status" style="font-size:12px;color:#94a3b8;align-self:center;"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2. 智能问答</h2>
+      <input type="text" id="question" placeholder="输入问题，如：机器学习的主要应用有哪些？" />
+      <div class="row">
+        <button class="primary" onclick="ask()">提问</button>
+        <span id="ask-status" style="font-size:12px;color:#94a3b8;align-self:center;"></span>
+      </div>
+      <div class="answer" id="answer">等待提问...</div>
+      <div class="sources" id="sources"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <h2>3. 历史交互（PowerContext 记忆）</h2>
+    <div class="history" id="history">暂无记录</div>
+    <div class="row" style="margin-top:8px;">
+      <button class="ghost" onclick="loadHistory()">刷新历史</button>
+    </div>
+  </div>
+</div>
+
+<script>
+async function importDoc() {
+  const text = document.getElementById('doc-text').value.trim();
+  const title = document.getElementById('title').value.trim();
+  if (!text) return alert('请输入文本内容');
+  document.getElementById('import-status').textContent = '索引中...';
+  const r = await fetch('/api/import', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text, title})
+  });
+  const d = await r.json();
+  document.getElementById('import-status').textContent = d.ok ? `已索引 ${d.count} 个段落` : d.error;
+  document.getElementById('doc-text').value = '';
+}
+
+async function ask() {
+  const q = document.getElementById('question').value.trim();
+  if (!q) return;
+  document.getElementById('ask-status').textContent = '检索中...';
+  document.getElementById('answer').textContent = '思考中...';
+  const r = await fetch('/api/query', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({question: q, user_id: 'default'})
+  });
+  const d = await r.json();
+  document.getElementById('ask-status').textContent = '';
+  document.getElementById('answer').textContent = d.answer;
+  document.getElementById('sources').innerHTML = d.sources.map((s, i) =>
+    `<div class="source"><span class="tag">来源${i+1}</span>${s.title || ''} ${s.content?.slice(0,80)||''}...</div>`
+  ).join('');
+  loadHistory();
+}
+
+async function loadHistory() {
+  const r = await fetch('/api/history/default');
+  const d = await r.json();
+  const el = document.getElementById('history');
+  if (d && d.history && d.history.length) {
+    el.innerHTML = d.history.slice(-5).reverse().map(h =>
+      `<div class="hist-item"><b>Q:</b> ${h.question}<br><b>A:</b> ${(h.answer||'').slice(0,100)}</div>`
+    ).join('');
+  } else {
+    el.innerHTML = '暂无记录';
+  }
+}
+loadHistory();
+</script>
+</body>
+</html>
