@@ -123,14 +123,16 @@ _SEEKDB_VECTOR_TAG_PREDICATE = """
     'one', CONCAT('$."', m.vector_id, '"'))
 """
 
+# Use the same default MATCH mode as the single-channel SQLAlchemy query.
+# An explicit BOOLEAN MODE can change relevance and the lexical top-k.
 _SEEKDB_HYBRID_SQL = """
 WITH lexical_top AS (
     SELECT m.memory_artifact_id, m.head_revision, m.entry_id, m.entry_version_id,
-           MATCH(m.searchable_text) AGAINST (:query IN BOOLEAN MODE) AS relevance
+           MATCH(m.searchable_text) AGAINST (:analyzed_query) AS relevance
     FROM pc_memory_entry_heads AS m FORCE INDEX ({fts_index})
     WHERE m.scope_id = :scope_id
       AND m.memory_artifact_id IN :memory_artifact_ids
-      AND MATCH(m.searchable_text) AGAINST (:query IN BOOLEAN MODE)
+      AND MATCH(m.searchable_text) AGAINST (:analyzed_query)
       {lexical_filter}
     ORDER BY relevance DESC, m.memory_artifact_id, m.entry_id, m.entry_version_id
     LIMIT :candidate_limit
@@ -602,7 +604,7 @@ class SeekDBMemoryIndex(CompositeMemoryIndex):
             {
                 "scope_id": scope_id,
                 "memory_artifact_ids": tuple(memory.artifact_id for memory in request.memories),
-                "query": request.analyzed_query,
+                "analyzed_query": request.analyzed_query,
                 "query_vector": validate_embedding(request.query_vector, dimension=self._profile.dimension),
                 "candidate_limit": request.candidate_limit,
                 **memory_tag_parameters(request.tag_filter),
