@@ -1,0 +1,362 @@
+app:
+  description: 把自然语言需求转换成 OceanBase / seekdb 可执行 SQL，并直接连到 seekdb 校验执行结果。
+  icon: 🗄️
+  icon_background: '#E0F2FE'
+  mode: advanced-chat
+  name: OceanBase SQL Helper
+  use_icon_as_answer_icon: false
+kind: app
+version: 0.1.5
+workflow:
+  conversation_variables: []
+  environment_variables:
+    - description: seekdb 执行桥接服务地址，Dify 与 seekdb 同机时可用 http://host.docker.internal:18080
+      id: env-seekdb-bridge-url
+      name: SEEKDB_BRIDGE_URL
+      selector:
+        - env
+        - SEEKDB_BRIDGE_URL
+      value: http://host.docker.internal:18080
+      value_type: string
+  features:
+    file_upload:
+      allowed_file_extensions:
+        - .JPG
+        - .JPEG
+        - .PNG
+        - .GIF
+        - .WEBP
+        - .SVG
+      allowed_file_types:
+        - image
+      allowed_file_upload_methods:
+        - local_file
+        - remote_url
+      enabled: false
+      fileUploadConfig:
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        image_file_size_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      number_limits: 3
+    opening_statement: 你好，我是 OceanBase SQL Helper。描述你的需求，我会生成可直接执行的 seekdb SQL，并连到 seekdb 校验执行结果。例如：创建 128 维向量表 items；查询最相似的 10 条向量。
+    retriever_resource:
+      enabled: true
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions:
+      - 帮我建个 128 维的向量表 items
+      - 创建 HNSW 向量索引，distance 用 l2
+      - 查询 ids 表里有多少条记录
+    suggested_questions_after_answer:
+      enabled: true
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: start
+          targetType: llm
+        id: edge-start-llm
+        source: start
+        sourceHandle: source
+        target: llm_sql
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: llm
+          targetType: code
+        id: edge-llm-code
+        source: llm_sql
+        sourceHandle: source
+        target: code_clean
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: code
+          targetType: http-request
+        id: edge-code-http
+        source: code_clean
+        sourceHandle: source
+        target: http_seekdb
+        targetHandle: target
+        type: custom
+        zIndex: 0
+      - data:
+          isInIteration: false
+          isInLoop: false
+          sourceType: http-request
+          targetType: answer
+        id: edge-http-answer
+        source: http_seekdb
+        sourceHandle: source
+        target: answer
+        targetHandle: target
+        type: custom
+        zIndex: 0
+    nodes:
+      - data:
+          desc: 接收用户需求、表名、维度、返回条数
+          selected: false
+          title: 开始
+          type: start
+          variables:
+            - label: 需求描述
+              max_length: 2000
+              options: []
+              required: true
+              type: paragraph
+              variable: query
+            - label: 表名
+              max_length: 128
+              options: []
+              required: false
+              type: text-input
+              variable: table
+            - label: 向量维度
+              max_length: 16
+              options: []
+              required: false
+              type: text-input
+              variable: dim
+            - label: 返回条数
+              max_length: 16
+              options: []
+              required: false
+              type: text-input
+              variable: topk
+        height: 194
+        id: start
+        position:
+          x: 80
+          y: 262
+        positionAbsolute:
+          x: 80
+          y: 262
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          context:
+            enabled: false
+            variable_selector: []
+          desc: 依据 OceanBase / seekdb 语法生成只读 SQL
+          model:
+            completion_params:
+              temperature: 0.1
+            mode: chat
+            name: qwen-plus
+            provider: langgenius/tongyi/tongyi
+          prompt_template:
+            - role: system
+              text: |
+                你是 OceanBase / seekdb SQL 专家。根据用户需求生成一条可直接执行的 SQL。
+
+                必须遵守：
+                1. 只输出 SQL，不要解释，不要多余文字；可以用 ```sql 代码块包裹。
+                2. 默认表名 items，默认向量维度 128，默认返回 10 条；用户指定时以用户为准。
+                3. seekdb 与 OceanBase 4.x 语法一致，默认端口 2881。
+                4. APPROXIMATE 用于走向量索引的近似检索，去掉会退化为全表精确扫描。
+                5. lib=cuvs 需要 GPU；纯 CPU 环境改用 type=hnsw 且不指定 lib。
+
+                SQL 模板：
+
+                向量表
+                CREATE TABLE items (
+                    id BIGINT PRIMARY KEY,
+                    v VECTOR(128)
+                );
+
+                CAGRA / HNSW 向量索引
+                CREATE VECTOR INDEX idx_items_v ON items(v)
+                WITH (
+                    distance=l2,
+                    type=hnsw,
+                    lib=cuvs,
+                    m=16,
+                    ef_construction=200,
+                    ef_search=64
+                );
+
+                向量相似度检索
+                SELECT id, l2_distance(v, query_vector) AS distance
+                FROM items
+                ORDER BY l2_distance(v, query_vector)
+                APPROXIMATE LIMIT 10;
+
+                统计
+                SELECT COUNT(*) AS total FROM items;
+
+                范围查询
+                SELECT * FROM items WHERE id > 100 AND id < 1000 LIMIT 100;
+            - role: user
+              text: |
+                需求：{{#start.query#}}
+                表名：{{#start.table#}}
+                向量维度：{{#start.dim#}}
+                返回条数：{{#start.topk#}}
+          selected: false
+          title: 生成 SQL
+          type: llm
+          variables: []
+          vision:
+            enabled: false
+        height: 98
+        id: llm_sql
+        position:
+          x: 404
+          y: 262
+        positionAbsolute:
+          x: 404
+          y: 262
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          code: |
+            import re
+
+
+            def main(raw: str) -> dict:
+                sql = (raw or "").strip()
+                m = re.search(r"```(?:sql)?\s*(.*?)```", sql, re.S | re.I)
+                if m:
+                    sql = m.group(1)
+                sql = sql.strip().rstrip(";") + ";"
+                first = sql.split()[0].upper() if sql.split() else ""
+                readonly = first in ("SELECT", "SHOW", "DESC", "DESCRIBE", "WITH", "EXPLAIN")
+                return {"sql": sql, "readonly": "true" if readonly else "false"}
+          code_language: python3
+          desc: 剥离代码块围栏，判定是否只读语句
+          outputs:
+            readonly:
+              children: null
+              type: string
+            sql:
+              children: null
+              type: string
+          selected: false
+          title: 清洗 SQL
+          type: code
+          variables:
+            - value_selector:
+                - llm_sql
+                - text
+              variable: raw
+        height: 80
+        id: code_clean
+        position:
+          x: 728
+          y: 262
+        positionAbsolute:
+          x: 728
+          y: 262
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          authorization:
+            config: null
+            type: no-auth
+          body:
+            data:
+              - key: sql
+                type: text
+                value: '{{#code_clean.sql#}}'
+            type: json
+          default_value:
+            - key: body
+              type: string
+              value: '{"ok":false,"message":"seekdb 执行服务未连接，已跳过实际执行"}'
+            - key: status_code
+              type: number
+              value: 0
+          desc: 把生成的 SQL 发到 seekdb 桥接服务执行，不可用时降级为仅展示 SQL
+          error_strategy: default-value
+          headers: 'Content-Type:application/json'
+          method: post
+          params: ''
+          retry_config:
+            max_retries: 0
+            retry_enabled: false
+            retry_interval: 1000
+          selected: false
+          ssl_verify: true
+          timeout:
+            max_connect_timeout: 0
+            max_read_timeout: 0
+            max_write_timeout: 0
+          title: seekdb 执行
+          type: http-request
+          url: '{{#env.SEEKDB_BRIDGE_URL#}}/sql'
+          variables: []
+        height: 98
+        id: http_seekdb
+        position:
+          x: 1052
+          y: 262
+        positionAbsolute:
+          x: 1052
+          y: 262
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+      - data:
+          answer: |
+            **生成的 SQL**
+
+            ```sql
+            {{#code_clean.sql#}}
+            ```
+
+            **seekdb 执行结果**
+
+            ```json
+            {{#http_seekdb.body#}}
+            ```
+
+            > 只读校验：{{#code_clean.readonly#}}
+          desc: 展示 SQL 与 seekdb 实际执行结果
+          selected: false
+          title: 回答
+          type: answer
+          variables: []
+        height: 120
+        id: answer
+        position:
+          x: 1376
+          y: 262
+        positionAbsolute:
+          x: 1376
+          y: 262
+        selected: false
+        sourcePosition: right
+        targetPosition: left
+        type: custom
+        width: 244
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.8
