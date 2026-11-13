@@ -1,0 +1,354 @@
+diff -ruN -x __pycache__ -x .pytest_cache -x '*.pyc' /root/minimax/business_project/src/inventory/service.py /root/minimax-workspace/src/inventory/service.py
+--- /root/minimax/business_project/src/inventory/service.py	2026-11-11 14:00:49.000000000 +0000
++++ /root/minimax-workspace/src/inventory/service.py	2026-11-12 08:51:19.854909826 +0000
+@@ -1,95 +1,135 @@
+-"""库存预留服务。
+-
+-对外契约见 specs/spec-v1.md，修改需求见 specs/spec-v2.md。
+-"""
+-from __future__ import annotations
+-
+-import uuid
+-from dataclasses import dataclass
+-from typing import Dict, List, Optional
+-
+-
+-class InventoryError(ValueError):
+-    """业务校验失败时抛出。"""
+-
+-
+-@dataclass
+-class Reservation:
+-    reservation_id: str
+-    sku: str
+-    quantity: int
+-    status: str = "held"  # held | committed | released
+-
+-
+-class InventoryService:
+-    def __init__(self) -> None:
+-        self._stock: Dict[str, int] = {}
+-        self._reservations: Dict[str, Reservation] = {}
+-
+-    # ---------- 库存 ----------
+-    def add_stock(self, sku: str, quantity: int) -> int:
+-        self._check_quantity(quantity)
+-        if not isinstance(sku, str) or not sku:
+-            raise InventoryError("sku 必须是非空字符串")
+-        self._stock[sku] = self._stock.get(sku, 0) + quantity
+-        return self._stock[sku]
+-
+-    def get_stock(self, sku: str) -> int:
+-        return self._stock.get(sku, 0)
+-
+-    def get_available(self, sku: str) -> int:
+-        held = sum(r.quantity for r in self._reservations.values()
+-                   if r.sku == sku and r.status == "held")
+-        return self.get_stock(sku) - held
+-
+-    # ---------- 预留 ----------
+-    def reserve(self, sku: str, quantity: int) -> Reservation:
+-        self._check_quantity(quantity)
+-        if sku not in self._stock:
+-            raise InventoryError("未知 sku: %s" % sku)
+-        if quantity > self.get_available(sku):
+-            raise InventoryError(
+-                "可用库存不足: sku=%s 需要=%d 可用=%d"
+-                % (sku, quantity, self.get_available(sku))
+-            )
+-        reservation = Reservation(
+-            reservation_id="rsv-" + uuid.uuid4().hex[:12],
+-            sku=sku,
+-            quantity=quantity,
+-        )
+-        self._reservations[reservation.reservation_id] = reservation
+-        return reservation
+-
+-    def release(self, reservation_id: str) -> bool:
+-        reservation = self._reservations.get(reservation_id)
+-        if reservation is None or reservation.status != "held":
+-            return False
+-        reservation.status = "released"
+-        return True
+-
+-    def commit(self, reservation_id: str) -> bool:
+-        reservation = self._reservations.get(reservation_id)
+-        if reservation is None or reservation.status != "held":
+-            return False
+-        if reservation.quantity > self.get_stock(reservation.sku):
+-            raise InventoryError("库存不足，无法出库: %s" % reservation.sku)
+-        self._stock[reservation.sku] -= reservation.quantity
+-        reservation.status = "committed"
+-        return True
+-
+-    def get_reservation(self, reservation_id: str) -> Optional[Reservation]:
+-        return self._reservations.get(reservation_id)
+-
+-    def list_reservations(self, status: Optional[str] = None) -> List[Reservation]:
+-        items = list(self._reservations.values())
+-        if status is None:
+-            return items
+-        return [r for r in items if r.status == status]
+-
+-    # ---------- 内部 ----------
+-    @staticmethod
+-    def _check_quantity(quantity: int) -> None:
+-        if not isinstance(quantity, int) or isinstance(quantity, bool):
+-            raise InventoryError("quantity 必须是整数")
+-        if quantity <= 0:
+-            raise InventoryError("quantity 必须大于 0")
++"""库存预留服务。
++
++对外契约见 specs/spec-v1.md，修改需求见 specs/spec-v2.md。
++"""
++from __future__ import annotations
++
++import time
++import uuid
++from dataclasses import dataclass
++from typing import Dict, List, Optional
++
++
++class InventoryError(ValueError):
++    """业务校验失败时抛出。"""
++
++
++@dataclass
++class Reservation:
++    reservation_id: str
++    sku: str
++    quantity: int
++    status: str = "held"  # held | committed | released | expired
++    expires_at: float | None = None
++
++
++class InventoryService:
++    def __init__(self) -> None:
++        self._stock: Dict[str, int] = {}
++        self._reservations: Dict[str, Reservation] = {}
++
++    # ---------- 库存 ----------
++    def add_stock(self, sku: str, quantity: int) -> int:
++        self._check_quantity(quantity)
++        if not isinstance(sku, str) or not sku:
++            raise InventoryError("sku 必须是非空字符串")
++        self._stock[sku] = self._stock.get(sku, 0) + quantity
++        return self._stock[sku]
++
++    def get_stock(self, sku: str) -> int:
++        return self._stock.get(sku, 0)
++
++    def get_available(self, sku: str) -> int:
++        self._expire_due_reservations()
++        held = sum(
++            r.quantity
++            for r in self._reservations.values()
++            if r.sku == sku and r.status == "held"
++        )
++        return self.get_stock(sku) - held
++
++    # ---------- 预留 ----------
++    def reserve(
++        self,
++        sku: str,
++        quantity: int,
++        ttl_seconds: int | None = None,
++    ) -> Reservation:
++        self._check_quantity(quantity)
++        self._check_ttl(ttl_seconds)
++        if sku not in self._stock:
++            raise InventoryError("未知 sku: %s" % sku)
++        if quantity > self.get_available(sku):
++            raise InventoryError(
++                "可用库存不足: sku=%s 需要=%d 可用=%d"
++                % (sku, quantity, self.get_available(sku))
++            )
++        reservation = Reservation(
++            reservation_id="rsv-" + uuid.uuid4().hex[:12],
++            sku=sku,
++            quantity=quantity,
++            expires_at=(
++                None if ttl_seconds is None else time.time() + ttl_seconds
++            ),
++        )
++        self._reservations[reservation.reservation_id] = reservation
++        return reservation
++
++    def release(self, reservation_id: str) -> bool:
++        self._expire_due_reservations()
++        reservation = self._reservations.get(reservation_id)
++        if reservation is None or reservation.status != "held":
++            return False
++        reservation.status = "released"
++        return True
++
++    def commit(self, reservation_id: str) -> bool:
++        self._expire_due_reservations()
++        reservation = self._reservations.get(reservation_id)
++        if reservation is None or reservation.status != "held":
++            return False
++        if reservation.quantity > self.get_stock(reservation.sku):
++            raise InventoryError("库存不足，无法出库: %s" % reservation.sku)
++        self._stock[reservation.sku] -= reservation.quantity
++        reservation.status = "committed"
++        return True
++
++    def get_reservation(self, reservation_id: str) -> Optional[Reservation]:
++        self._expire_due_reservations()
++        return self._reservations.get(reservation_id)
++
++    def list_reservations(self, status: Optional[str] = None) -> List[Reservation]:
++        self._expire_due_reservations()
++        items = list(self._reservations.values())
++        if status is None:
++            return items
++        return [r for r in items if r.status == status]
++
++    # ---------- 内部 ----------
++    @staticmethod
++    def _check_quantity(quantity: int) -> None:
++        if not isinstance(quantity, int) or isinstance(quantity, bool):
++            raise InventoryError("quantity 必须是整数")
++        if quantity <= 0:
++            raise InventoryError("quantity 必须大于 0")
++
++    @staticmethod
++    def _check_ttl(ttl_seconds: Optional[int]) -> None:
++        if ttl_seconds is None:
++            return
++        if (
++            not isinstance(ttl_seconds, int)
++            or isinstance(ttl_seconds, bool)
++            or ttl_seconds <= 0
++        ):
++            raise InventoryError("ttl_seconds 必须是正整数")
++
++    def _expire_due_reservations(self) -> None:
++        now = time.time()
++        for reservation in self._reservations.values():
++            if (
++                reservation.status == "held"
++                and reservation.expires_at is not None
++                and reservation.expires_at <= now
++            ):
++                reservation.status = "expired"
+diff -ruN -x __pycache__ -x .pytest_cache -x '*.pyc' /root/minimax/business_project/tests/test_ttl.py /root/minimax-workspace/tests/test_ttl.py
+--- /root/minimax/business_project/tests/test_ttl.py	1970-01-01 00:00:00.000000000 +0000
++++ /root/minimax-workspace/tests/test_ttl.py	2026-11-12 08:51:19.854909826 +0000
+@@ -0,0 +1,115 @@
++import unittest
++from unittest.mock import patch
++
++import inventory.service as inventory_service
++from inventory.service import InventoryError, InventoryService
++
++
++class FakeClock:
++    def __init__(self, now: float = 1_000.0) -> None:
++        self.now = now
++
++    def time(self) -> float:
++        return self.now
++
++    def advance(self, seconds: float) -> None:
++        self.now += seconds
++
++
++class ReservationTTLTests(unittest.TestCase):
++    def setUp(self) -> None:
++        self.clock = FakeClock()
++        time_patch = patch.object(inventory_service, "time", self.clock)
++        time_patch.start()
++        self.addCleanup(time_patch.stop)
++
++        self.service = InventoryService()
++
++    def test_reservation_can_commit_within_ttl(self) -> None:
++        self.service.add_stock("sku-1", 5)
++        reservation = self.service.reserve("sku-1", 2, ttl_seconds=30)
++
++        self.assertEqual(reservation.expires_at, 1_030.0)
++
++        self.clock.advance(29)
++
++        self.assertTrue(self.service.commit(reservation.reservation_id))
++        self.assertEqual(self.service.get_stock("sku-1"), 3)
++        self.assertEqual(
++            self.service.get_reservation(reservation.reservation_id).status,
++            "committed",
++        )
++
++    def test_expired_reservation_restores_available_stock(self) -> None:
++        self.service.add_stock("sku-1", 5)
++        reservation = self.service.reserve("sku-1", 3, ttl_seconds=10)
++
++        self.assertEqual(self.service.get_available("sku-1"), 2)
++
++        self.clock.advance(10)
++
++        self.assertEqual(self.service.get_available("sku-1"), 5)
++        self.assertEqual(
++            self.service.get_reservation(reservation.reservation_id).status,
++            "expired",
++        )
++
++    def test_release_after_expiration_returns_false(self) -> None:
++        self.service.add_stock("sku-1", 5)
++        reservation = self.service.reserve("sku-1", 2, ttl_seconds=10)
++
++        self.clock.advance(10)
++
++        self.assertFalse(self.service.release(reservation.reservation_id))
++        self.assertEqual(self.service.get_stock("sku-1"), 5)
++        self.assertEqual(
++            self.service.get_reservation(reservation.reservation_id).status,
++            "expired",
++        )
++
++    def test_commit_after_expiration_returns_false(self) -> None:
++        self.service.add_stock("sku-1", 5)
++        reservation = self.service.reserve("sku-1", 2, ttl_seconds=10)
++
++        self.clock.advance(10)
++
++        self.assertFalse(self.service.commit(reservation.reservation_id))
++        self.assertEqual(self.service.get_stock("sku-1"), 5)
++        self.assertEqual(
++            self.service.get_reservation(reservation.reservation_id).status,
++            "expired",
++        )
++
++    def test_non_positive_ttl_raises_inventory_error(self) -> None:
++        self.service.add_stock("sku-1", 5)
++
++        for ttl_seconds in (0, -1):
++            with self.subTest(ttl_seconds=ttl_seconds):
++                with self.assertRaises(InventoryError):
++                    self.service.reserve("sku-1", 1, ttl_seconds=ttl_seconds)
++
++        self.assertEqual(self.service.list_reservations(), [])
++
++    def test_non_integer_ttl_raises_inventory_error(self) -> None:
++        self.service.add_stock("sku-1", 5)
++
++        for ttl_seconds in (1.5, "10", True):
++            with self.subTest(ttl_seconds=ttl_seconds):
++                with self.assertRaises(InventoryError):
++                    self.service.reserve("sku-1", 1, ttl_seconds=ttl_seconds)
++
++    def test_none_ttl_never_expires(self) -> None:
++        self.service.add_stock("sku-1", 5)
++        reservation = self.service.reserve("sku-1", 2)
++
++        self.assertIsNone(reservation.expires_at)
++
++        self.clock.advance(86_400)
++
++        self.assertEqual(
++            self.service.get_reservation(reservation.reservation_id).status,
++            "held",
++        )
++        self.assertEqual(self.service.get_available("sku-1"), 3)
++        self.assertTrue(self.service.commit(reservation.reservation_id))
++        self.assertEqual(self.service.get_stock("sku-1"), 3)
+
