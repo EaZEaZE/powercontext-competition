@@ -1,0 +1,14 @@
+exit=0
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.0.3, pluggy-1.6.0
+rootdir: /root/minimax-workspace
+configfile: pyproject.toml
+testpaths: tests
+plugins: hypothesis-6.155.0, anyio-4.14.2, xdist-3.8.0, timeout-2.4.0, forked-1.6.0
+collected 19 items
+
+tests/test_service.py ............                                       [ 63%]
+tests/test_ttl.py .......                                                [100%]
+
+============================== 19 passed in 0.10s ==============================
+
