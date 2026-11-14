@@ -262,23 +262,31 @@
 
   <section id="run">
     <h2>本地运行</h2>
-    <p class="sub">需要 Python 3.10+、一个可连接的 seekdb、以及 MiniMax API Key</p>
-<pre># 1. 安装依赖
+    <p class="sub">需要 Python 3.11+、MiniMax API Key，以及一个能连到的 seekdb；PowerContext 用于记忆与偏好</p>
+<pre># 安装依赖（所有平台相同）
 cd backend
 pip install -r requirements.txt
 
-# 2. 配置环境变量
+# Linux / Apple Silicon macOS：嵌入式 seekdb，数据落在本地目录
 export MINIMAX_API_KEY="你的 Key"
-export SEEKDB_HOST=127.0.0.1
-export SEEKDB_PORT=2881
 export POWERCONTEXT_BASE=http://127.0.0.1:8001
-
-# 3. 启动
+export SEEKDB_EMBEDDED=1
+export SEEKDB_PATH=../seekdb-data
 python main.py
 
-# 4. 打开界面
+# Windows / Intel macOS：装不上嵌入式原生库，先用 Docker 起 seekdb
+docker run -d --name seekdb -p 2881:2881 -v seekdb-data:/var/lib/oceanbase oceanbase/seekdb:latest
+# PowerShell 用 $env:变量名，cmd 用 set，变量名相同
+export MINIMAX_API_KEY="你的 Key"
+export POWERCONTEXT_BASE=http://127.0.0.1:8001
+export SEEKDB_HOST=127.0.0.1
+export SEEKDB_PORT=2881
+python main.py
+
+# 打开界面
 open http://localhost:8000/static/index.html</pre>
     <div class="note">
+      没有网络装不上向量模型时，加 <code>EMBEDDING_BACKEND=hash</code> 即可跑通导入到回答的完整流程，代价是检索质量会下降，正式使用请保持默认的 <code>minilm</code>。
       完整说明（依赖版本、seekdb 与 PowerContext 接入方式、接口列表）见代码仓库中的 <code>qoder/README.md</code>。
     </div>
   </section>
