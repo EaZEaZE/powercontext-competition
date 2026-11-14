@@ -23,30 +23,23 @@
   };
 
   async function loadModel() {
-    log("正在加载模型（INT8 量化）...");
+    log("正在加载模型（INT8 量化，约 23MB）...");
     const t0 = performance.now();
+    env.backends.onnx.wasm.numThreads = 4;
+    env.allowLocalModels = false;
     try {
-      // 尝试 WebGPU
-      env.backends.onnx.wasm.numThreads = 4;
-      extractor = await pipeline("feature-extraction", MODEL_ID, {
-        quantized: true, // INT8
-        dtype: "fp32",
-      });
-      // 检测实际后端
-      backendType = env.backends.onnx.wasm ? "WASM" : "unknown";
-      // Transformers.js 2.x 的 WebGPU 通过 onnxruntime-web
-      const backendInfo = await env.getBackend();
-      if (backendInfo) backendType = backendInfo;
-    } catch (e) {
-      log("WebGPU 不可用，降级 WASM: " + e.message);
-      env.allowLocalModels = false;
-      extractor = await pipeline("feature-extraction", MODEL_ID, {
-        quantized: true,
-      });
+      extractor = await pipeline("feature-extraction", MODEL_ID, { quantized: true });
       backendType = "WASM";
+    } catch (e) {
+      // 部分地区访问 huggingface.co 会超时，切换镜像源重试
+      log("默认源加载失败（" + e.message + "），切换到 hf-mirror 镜像重试...");
+      env.remoteHost = "https://hf-mirror.com";
+      env.remotePathTemplate = "{model}/resolve/{revision}/";
+      extractor = await pipeline("feature-extraction", MODEL_ID, { quantized: true });
+      backendType = "WASM（镜像源）";
     }
     const t1 = performance.now();
-    $("model-status").textContent = `已加载 · ${backendType} 后端 · INT8 量化`;
+    $("model-status").textContent = `已加载 · ${backendType} · INT8 量化`;
     $("model-status").className = "badge ok";
     log(`模型加载完成，后端=${backendType}，耗时 ${(t1 - t0).toFixed(0)}ms`);
   }
