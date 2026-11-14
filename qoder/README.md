@@ -124,6 +124,10 @@ python verify.py                                    # 默认 http://127.0.0.1:80
 BASE_URL=http://127.0.0.1:9000 python verify.py      # 指定其他地址
 ```
 
+## 实现说明
+
+- **新写入的数据必须 `refresh_index()` 之后才可被检索。** seekdb 的向量索引是异步构建的：`coll.add()` 返回后 `count()` 已经能数到新段落，但紧接着的向量检索依旧返回空 ids，表现为「导入成功 5 段，立刻提问却说知识库里没有内容」。因此 `/api/import` 写入之后、`/api/clear` 重建集合之后都显式调用一次 `coll.refresh_index()`（底层执行 `CALL dbms_index_manager.refresh()`，同步等到刷新完成才返回；seekdb 1.3.0.0 以下该方法自动退化为空操作，不会报错）。以后新增任何写入路径，都要带上这一步。
+
 ## 核心接口
 
 | 接口 | 说明 |
