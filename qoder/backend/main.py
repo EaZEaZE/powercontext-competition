@@ -264,15 +264,18 @@ def import_doc(req: ImportReq):
 
     coll = get_collection()
     coll.add(ids=ids, embeddings=vecs, documents=docs, metadatas=metadatas)
+    # seekdb 的向量索引是异步构建的，不 refresh 的话 count() 能看到新行，检索却查不到
+    coll.refresh_index()
     return {"ok": True, "count": len(chunks)}
 
 
 @app.delete("/api/clear")
 def clear_docs():
-    """清空 zhiyan_docs：删完必须重新 get_or_create 拿新句柄，旧句柄随集合失效，复用会让检索静默返回空"""
+    """清空 zhiyan_docs：删完必须重新 get_or_create 拿新句柄，旧句柄随集合失效，复用会让检索静默返回空；重建后同样要刷新索引"""
     try:
         seekdb_client.delete_collection(COLLECTION)
         coll = get_collection()
+        coll.refresh_index()
         return {"ok": True, "docs": coll.count()}
     except Exception as e:
         return {"ok": False, "error": f"清空知识库失败: {e}"}
