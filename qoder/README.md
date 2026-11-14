@@ -4,11 +4,13 @@
 
 智研助手是一个面向学习与科研场景的智能问答应用。用户导入论文摘要或笔记后，可以用自然语言提问，系统通过 **seekdb 语义检索**找到相关段落，结合 **MiniMax 大模型**生成带出处的回答，并通过 **PowerContext** 记住用户偏好与历史交互。
 
+线上站点（Qoder Sites，任何人可访问）：https://zhiyan-assistant-uprymp42hk8.qoder.zone
+
 ## 技术栈
 
 | 组件 | 作用 | 实际使用方式 |
 |---|---|---|
-| **Qoder** | 开发与发布 | 项目在 Qoder 中开发，通过 Qoder Sites 发布 |
+| **Qoder** | 开发与发布 | Qoder 完成 PowerContext 接口对接、嵌入式与离线向量后端、异常兜底、前端完善、验证脚本，并通过 Qoder Sites 发布站点 |
 | **seekdb** | 向量检索 | 文档切块后向量化存入 seekdb，查询时语义检索 Top-5 |
 | **PowerContext** | 记忆与上下文 | 保存用户历史问答与偏好，下次问答自动注入 |
 | **MiniMax** | 大模型 | 基于检索结果生成带引用的回答 |
