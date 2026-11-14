@@ -1,7 +1,11 @@
+# 核心依赖：hash 冒烟模式（EMBEDDING_BACKEND=hash）装这些就够，不需要 torch
 fastapi==0.110.0
 uvicorn==0.27.1
 pyseekdb>=1.4.0
 httpx==0.27.0
-sentence-transformers==2.5.1
 numpy==1.26.4
 pydantic==2.6.1
+
+# 可选依赖：仅 minilm 后端（默认，正式使用推荐的检索质量）需要，会连带装 torch 等大包。
+# 需要时单独执行：pip install "sentence-transformers==2.5.1"
+# sentence-transformers==2.5.1
