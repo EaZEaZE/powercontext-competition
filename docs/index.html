@@ -23,20 +23,30 @@
   };
 
   async function loadModel() {
-    log("正在加载模型（INT8 量化，约 23MB）...");
+    log("正在加载模型（INT8 量化，优先同源加载）...");
     const t0 = performance.now();
     env.backends.onnx.wasm.numThreads = 4;
-    env.allowLocalModels = false;
     try {
+      // 优先使用随站点部署的模型文件，无外网也能跑
+      env.allowLocalModels = true;
+      env.localModelPath = new URL("./models/", location.href).href;
+      env.allowRemoteModels = false;
       extractor = await pipeline("feature-extraction", MODEL_ID, { quantized: true });
-      backendType = "WASM";
+      backendType = "WASM（同源模型）";
     } catch (e) {
-      // 部分地区访问 huggingface.co 会超时，切换镜像源重试
-      log("默认源加载失败（" + e.message + "），切换到 hf-mirror 镜像重试...");
-      env.remoteHost = "https://hf-mirror.com";
-      env.remotePathTemplate = "{model}/resolve/{revision}/";
-      extractor = await pipeline("feature-extraction", MODEL_ID, { quantized: true });
-      backendType = "WASM（镜像源）";
+      log("同源模型加载失败（" + e.message + "），尝试远程源...");
+      env.allowRemoteModels = true;
+      try {
+        extractor = await pipeline("feature-extraction", MODEL_ID, { quantized: true });
+        backendType = "WASM（远程）";
+      } catch (e2) {
+        // 部分地区访问 huggingface.co 会超时，切换镜像源重试
+        log("远程源失败（" + e2.message + "），切换 hf-mirror 镜像重试...");
+        env.remoteHost = "https://hf-mirror.com";
+        env.remotePathTemplate = "{model}/resolve/{revision}/";
+        extractor = await pipeline("feature-extraction", MODEL_ID, { quantized: true });
+        backendType = "WASM（镜像源）";
+      }
     }
     const t1 = performance.now();
     $("model-status").textContent = `已加载 · ${backendType} · INT8 量化`;
