@@ -1,5 +1,13 @@
 # 阶跃星辰赛题 · 端侧 AI 推理与 seekdb 混合检索
 
+## 在线体验（无需安装）
+
+https://eazeaze.github.io/powercontext-competition/
+
+纯静态托管（GitHub Pages），模型文件随站点同源部署（`docs/models/`，约 23MB），打开即可用：模型加载 → 导入文档 → 检索全部在浏览器内完成，不依赖任何后端服务与外网模型源。
+
+> 部署版本的检索层是浏览器内余弦检索（无后端时的自动降级）；接入 Node/Python 后端后同一份前端会改走 seekdb 混合检索。两种模式共用同一套本地向量化逻辑。
+
 ## 一句话方案
 
 浏览器本地用 **Transformers.js + INT8 量化 all-MiniLM-L6-v2** 计算文档与查询的 embedding，**seekdb** 负责存储与向量+全文混合检索（RRF 融合），全程无云端推理调用。
