@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>智研助手 · 把论文和笔记变成能追问的知识库</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #131c2e;
+    --line: #24314a;
+    --text: #e6edf7;
+    --muted: #93a2bd;
+    --accent: #4f8cff;
+    --accent-2: #37d3a0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(1100px 600px at 15% -10%, #16274a 0%, var(--bg) 55%);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.7;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 22px; }
+  header { padding: 76px 0 52px; }
+  .badge {
+    display: inline-block; font-size: 12px; letter-spacing: .08em;
+    color: #9fc0ff; background: rgba(79,140,255,.12);
+    border: 1px solid rgba(79,140,255,.32); border-radius: 999px;
+    padding: 4px 12px; margin-bottom: 20px;
+  }
+  h1 { font-size: 44px; line-height: 1.25; letter-spacing: -.02em; font-weight: 700; }
+  h1 span { color: var(--accent); }
+  .lead { color: var(--muted); font-size: 17px; margin-top: 16px; max-width: 720px; }
+  .actions { display: flex; gap: 12px; margin-top: 28px; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 10px 20px; border-radius: 8px;
+    font-size: 14px; text-decoration: none; transition: .2s;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: #3b78e8; }
+  .btn-ghost { border: 1px solid var(--line); color: var(--text); }
+  .btn-ghost:hover { border-color: var(--accent); color: #bcd4ff; }
+  section { padding: 44px 0; border-top: 1px solid rgba(36,49,74,.7); }
+  h2 { font-size: 22px; margin-bottom: 8px; }
+  .sub { color: var(--muted); font-size: 14px; margin-bottom: 26px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card {
+    background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,.012));
+    border: 1px solid var(--line); border-radius: 12px; padding: 20px;
+  }
+  .card h3 { font-size: 15px; margin-bottom: 8px; }
+  .card p { color: var(--muted); font-size: 13.5px; }
+  .num {
+    width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center;
+    background: rgba(79,140,255,.16); color: #9fc0ff; font-size: 13px; margin-bottom: 12px;
+  }
+  .stack { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .stack .card { text-align: center; padding: 18px 12px; }
+  .stack .tag { font-size: 14px; font-weight: 600; }
+  .stack .role { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .preview {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  }
+  .pane { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .pane h4 { font-size: 13px; color: #c6d3e8; margin-bottom: 10px; font-weight: 600; }
+  .fake-input {
+    border: 1px solid #3b4b6b; border-radius: 7px; padding: 8px 10px;
+    color: #7f8fae; font-size: 12.5px; margin-bottom: 10px;
+  }
+  .fake-area {
+    border: 1px solid #3b4b6b; border-radius: 7px; min-height: 76px;
+    padding: 8px 10px; color: #7f8fae; font-size: 12.5px;
+  }
+  .answer { font-size: 13px; color: #d7e2f4; margin-bottom: 10px; }
+  .src { font-size: 12px; color: var(--muted); border-top: 1px solid #1b2740; padding-top: 8px; }
+  .chip {
+    display: inline-block; background: #1b3560; color: #9fc0ff; font-size: 11px;
+    border-radius: 5px; padding: 1px 7px; margin-right: 6px;
+  }
+  .steps { counter-reset: s; }
+  .step {
+    display: grid; grid-template-columns: 30px 1fr; gap: 12px;
+    padding: 12px 0; border-bottom: 1px dashed rgba(36,49,74,.8);
+  }
+  .step:last-child { border-bottom: none; }
+  .step::before {
+    counter-increment: s; content: counter(s);
+    width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+    background: rgba(55,211,160,.14); color: var(--accent-2); font-size: 12px;
+  }
+  .step b { font-size: 14px; }
+  .step p { color: var(--muted); font-size: 13px; }
+  code, pre {
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px;
+  }
+  pre {
+    background: #080e1a; border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px; overflow-x: auto; color: #c9d6ea; line-height: 1.75;
+  }
+  .note {
+    color: var(--muted); font-size: 13px; background: rgba(79,140,255,.07);
+    border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0;
+    padding: 12px 14px; margin-top: 16px;
+  }
+  footer {
+    padding: 34px 0 56px; border-top: 1px solid rgba(36,49,74,.7);
+    color: #6f7f9c; font-size: 12.5px;
+  }
+  footer a { color: #8fb3f0; text-decoration: none; }
+  @media (max-width: 820px) {
+    h1 { font-size: 32px; }
+    .grid3, .stack, .preview { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div class="badge">OCEANBASE 2026 · QODER 赛道</div>
+    <h1>智研助手<br />把论文和笔记，变成<span>能追问的知识库</span></h1>
+    <p class="lead">
+      导入论文摘要、课程笔记或零散资料，用自然语言直接提问。系统用 seekdb 做语义检索找到最相关的段落，
+      再结合大模型生成带出处的回答，并通过 PowerContext 记住你的偏好与历史提问。
+    </p>
+    <div class="actions">
+      <a class="btn btn-primary" href="#run">查看运行方式</a>
+      <a class="btn btn-ghost" href="https://github.com/EaZEaZE/powercontext-competition/tree/2026-competition-ecosystem/qoder">代码仓库</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>要解决的痛点</h2>
+    <p class="sub">和身边同学聊下来，重复耗时的环节集中在三件事上</p>
+    <div class="grid3">
+      <div class="card">
+        <div class="num">1</div>
+        <h3>文献读不完，找不到结论</h3>
+        <p>下载几十篇论文，真正写综述时只记得「好像在哪篇看到过」，只能一篇篇翻。</p>
+      </div>
+      <div class="card">
+        <div class="num">2</div>
+        <h3>笔记散落，复习时检索无能</h3>
+        <p>笔记分散在文档、聊天记录和截图里，关键词对不上就彻底找不回来。</p>
+      </div>
+      <div class="card">
+        <div class="num">3</div>
+        <h3>每次提问都要重新交代背景</h3>
+        <p>通用问答工具不记得你研究什么方向、上次问过什么，上下文每次从零开始。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>核心功能</h2>
+    <p class="sub">四步闭环：导入 → 索引 → 检索 → 带出处回答</p>
+    <div class="grid3">
+      <div class="card">
+        <h3>文档导入与自动切块</h3>
+        <p>粘贴论文摘要或笔记，按语义切分成段落，向量化后写入 seekdb。</p>
+      </div>
+      <div class="card">
+        <h3>seekdb 语义检索</h3>
+        <p>问题向量化后做 HNSW 余弦检索，取最相关的 5 个段落作为回答依据。</p>
+      </div>
+      <div class="card">
+        <h3>带出处的回答</h3>
+        <p>回答中标注资料编号，正文下方列出命中的原始段落，可逐条回溯核对。</p>
+      </div>
+      <div class="card">
+        <h3>记忆与偏好复用</h3>
+        <p>PowerContext 保存历史问答与用户偏好，下次提问自动注入，不用重复交代背景。</p>
+      </div>
+      <div class="card">
+        <h3>历史交互回看</h3>
+        <p>侧栏展示最近的问答记录，点击刷新即可从记忆服务重新拉取。</p>
+      </div>
+      <div class="card">
+        <h3>纯本地数据</h3>
+        <p>文档与向量都存在自己的 seekdb 里，不依赖第三方知识库服务。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>技术组成</h2>
+    <p class="sub">每个组件都在主流程里承担具体职责，不是装上去凑数</p>
+    <div class="stack">
+      <div class="card">
+        <div class="tag">Qoder</div>
+        <div class="role">功能开发与站点发布</div>
+      </div>
+      <div class="card">
+        <div class="tag">seekdb</div>
+        <div class="role">向量存储与语义检索</div>
+      </div>
+      <div class="card">
+        <div class="tag">PowerContext</div>
+        <div class="role">用户偏好与历史记忆</div>
+      </div>
+      <div class="card">
+        <div class="tag">MiniMax</div>
+        <div class="role">基于检索结果生成回答</div>
+      </div>
+    </div>
+    <div class="note">
+      检索链路：问题 → embedding（MiniLM 384 维）→ seekdb HNSW 余弦检索 Top-5 → 拼装上下文 → 大模型生成带引用回答 → 写入记忆。
+    </div>
+  </section>
+
+  <section>
+    <h2>界面预览</h2>
+    <p class="sub">实际界面以本地运行版本为准</p>
+    <div class="preview">
+      <div class="pane">
+        <h4>1. 导入文献 / 笔记</h4>
+        <div class="fake-input">标题（可选）：机器学习综述</div>
+        <div class="fake-area">粘贴论文摘要、笔记内容…</div>
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center;">
+          <span class="btn btn-primary" style="padding:6px 14px;font-size:12.5px;">导入并索引</span>
+          <span style="font-size:12px;color:var(--muted);">已索引 3 个段落</span>
+        </div>
+      </div>
+      <div class="pane">
+        <h4>2. 智能问答</h4>
+        <div class="fake-input">输入问题，如：机器学习的主要应用有哪些？</div>
+        <div class="answer">机器学习广泛应用于图像识别、自然语言处理和推荐系统等领域<sup>[1]</sup>。</div>
+        <div class="src">
+          <div><span class="chip">来源1</span>机器学习综述 · 机器学习在图像识别…</div>
+          <div style="margin-top:6px;"><span class="chip">来源2</span>课程笔记 · 推荐系统依赖用户行为…</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>验证样例</h2>
+    <p class="sub">评审可按这三步复现主流程</p>
+    <div class="steps">
+      <div class="step">
+        <div>
+          <b>导入</b>
+          <p>粘贴一段关于「机器学习应用」的文本 → 点击导入，返回「已索引 N 个段落」。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <b>提问</b>
+          <p>输入「机器学习有哪些应用？」→ 返回带 [1] [2] 引用编号的回答，下方列出命中的原始段落。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <b>记忆复用</b>
+          <p>刷新历史区域，能看到刚才的问答记录；再次提问时，用户偏好会被自动带上。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="run">
+    <h2>本地运行</h2>
+    <p class="sub">需要 Python 3.10+、一个可连接的 seekdb、以及 MiniMax API Key</p>
+<pre># 1. 安装依赖
+cd backend
+pip install -r requirements.txt
+
+# 2. 配置环境变量
+export MINIMAX_API_KEY="你的 Key"
+export SEEKDB_HOST=127.0.0.1
+export SEEKDB_PORT=2881
+export POWERCONTEXT_BASE=http://127.0.0.1:8001
+
+# 3. 启动
+python main.py
+
+# 4. 打开界面
+open http://localhost:8000/static/index.html</pre>
+    <div class="note">
+      完整说明（依赖版本、seekdb 与 PowerContext 接入方式、接口列表）见代码仓库中的 <code>qoder/README.md</code>。
+    </div>
+  </section>
+
+  <footer>
+    智研助手 · OceanBase 2026 大赛 Qoder 赛道参赛作品 ·
+    <a href="https://github.com/EaZEaZE/powercontext-competition/tree/2026-competition-ecosystem/qoder">代码仓库</a>
+  </footer>
+</div>
+
+</body>
+</html>
