@@ -5,6 +5,11 @@ app:
   mode: advanced-chat
   name: OceanBase SQL Helper
   use_icon_as_answer_icon: false
+dependencies:
+  - current_identifier: null
+    type: marketplace
+    value:
+      marketplace_plugin_unique_identifier: langgenius/tongyi:0.0.14@d333909fe8d75a335b44da4b878d5120779b8703f12c21cf4730135d6864afbb
 kind: app
 version: 0.1.5
 workflow:
