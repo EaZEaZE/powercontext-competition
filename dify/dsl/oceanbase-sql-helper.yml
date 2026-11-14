@@ -118,7 +118,7 @@ workflow:
             - label: 需求描述
               max_length: 2000
               options: []
-              required: true
+              required: false
               type: paragraph
               variable: query
             - label: 表名
@@ -207,10 +207,20 @@ workflow:
                 SELECT * FROM items WHERE id > 100 AND id < 1000 LIMIT 100;
             - role: user
               text: |
-                需求：{{#start.query#}}
+                需求：{{#sys.query#}}
+                补充说明：{{#start.query#}}
                 表名：{{#start.table#}}
                 向量维度：{{#start.dim#}}
                 返回条数：{{#start.topk#}}
+          default_value:
+            - key: text
+              type: string
+              value: SELECT COUNT(*) AS total FROM items;
+          error_strategy: default-value
+          retry_config:
+            max_retries: 0
+            retry_enabled: false
+            retry_interval: 1000
           selected: false
           title: 生成 SQL
           type: llm
