@@ -23,9 +23,15 @@
   .answer { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 12px; margin-top: 10px; min-height: 60px; line-height: 1.6; font-size: 14px; white-space: pre-wrap; }
   .sources { margin-top: 8px; font-size: 12px; color: #94a3b8; }
   .source { padding: 4px 0; border-top: 1px solid #1e293b; }
+  .source.expandable { cursor: pointer; }
+  .source .full { display: none; margin-top: 4px; color: #cbd5e1; white-space: pre-wrap; }
+  .source.open .full { display: block; }
+  .source.open .brief { display: none; }
+  .source.open .full::after { content: "（点击收起）"; display: block; color: #64748b; font-size: 11px; margin-top: 4px; }
   .tag { display: inline-block; background: #1e40af; color: #93c5fd; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-right: 4px; }
   .history { max-height: 200px; overflow-y: auto; font-size: 12px; }
   .hist-item { padding: 6px 0; border-bottom: 1px solid #334155; }
+  .hist-time { color: #64748b; font-size: 11px; margin-left: 6px; }
   @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -36,11 +42,12 @@
 
   <div class="grid">
     <div class="card">
-      <h2>1. 导入文献/笔记</h2>
+      <h2>1. 导入文献/笔记 <span id="doc-count" style="font-size:12px;color:#94a3b8;font-weight:normal;"></span></h2>
       <input type="text" id="title" placeholder="标题（可选）" style="margin-bottom:8px;" />
       <textarea id="doc-text" placeholder="粘贴论文摘要、笔记内容..."></textarea>
       <div class="row">
         <button class="primary" onclick="importDoc()">导入并索引</button>
+        <button class="ghost" onclick="clearDocs()">清空知识库</button>
         <span id="import-status" style="font-size:12px;color:#94a3b8;align-self:center;"></span>
       </div>
     </div>
@@ -79,6 +86,27 @@ async function importDoc() {
   const d = await r.json();
   document.getElementById('import-status').textContent = d.ok ? `已索引 ${d.count} 个段落` : d.error;
   document.getElementById('doc-text').value = '';
+  loadStats();
+}
+
+async function clearDocs() {
+  if (!confirm('确定清空知识库？zhiyan_docs 中的全部段落都会被删除，且不可恢复。')) return;
+  document.getElementById('import-status').textContent = '清空中...';
+  const r = await fetch('/api/clear', {method: 'DELETE'});
+  const d = await r.json();
+  document.getElementById('import-status').textContent = d.ok ? '知识库已清空' : (d.error || '清空失败');
+  loadStats();
+}
+
+async function loadStats() {
+  const el = document.getElementById('doc-count');
+  try {
+    const r = await fetch('/api/stats');
+    const d = await r.json();
+    el.textContent = `库内 ${d.docs ?? 0} 段`;
+  } catch (e) {
+    el.textContent = '统计不可用';
+  }
 }
 
 async function ask() {
@@ -93,25 +121,85 @@ async function ask() {
   const d = await r.json();
   document.getElementById('ask-status').textContent = '';
   document.getElementById('answer').textContent = d.answer;
-  document.getElementById('sources').innerHTML = d.sources.map((s, i) =>
-    `<div class="source"><span class="tag">来源${i+1}</span>${s.title || ''} ${s.content?.slice(0,80)||''}...</div>`
-  ).join('');
+  renderSources(d.sources || []);
   loadHistory();
+}
+
+function renderSources(sources) {
+  const box = document.getElementById('sources');
+  box.textContent = '';
+  sources.forEach((s, i) => {
+    const full = s.content || '';
+    const div = document.createElement('div');
+    div.className = 'source';
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = `来源${i+1}`;
+    div.appendChild(tag);
+    if (s.title) {
+      const title = document.createElement('span');
+      title.textContent = s.title + ' ';
+      div.appendChild(title);
+    }
+    if (full.length > 80) {
+      div.classList.add('expandable');
+      const brief = document.createElement('span');
+      brief.className = 'brief';
+      brief.textContent = `${full.slice(0, 80)}…（点击展开）`;
+      div.appendChild(brief);
+      const detail = document.createElement('div');
+      detail.className = 'full';
+      detail.textContent = full;
+      div.appendChild(detail);
+      div.onclick = () => div.classList.toggle('open');
+    } else {
+      const brief = document.createElement('span');
+      brief.textContent = full;
+      div.appendChild(brief);
+    }
+    box.appendChild(div);
+  });
+}
+
+function fmtTime(value) {
+  const date = new Date(value);
+  return isNaN(date) ? String(value) : date.toLocaleString('zh-CN', {hour12: false});
 }
 
 async function loadHistory() {
   const r = await fetch('/api/history/default');
   const d = await r.json();
   const el = document.getElementById('history');
-  if (d && d.history && d.history.length) {
-    el.innerHTML = d.history.slice(-5).reverse().map(h =>
-      `<div class="hist-item"><b>Q:</b> ${h.question}<br><b>A:</b> ${(h.answer||'').slice(0,100)}</div>`
-    ).join('');
-  } else {
-    el.innerHTML = '暂无记录';
+  el.textContent = '';
+  const list = (d.history || []).slice(-5).reverse();
+  if (!list.length) {
+    el.textContent = '暂无记录';
+    return;
   }
+  list.forEach(h => {
+    const item = document.createElement('div');
+    item.className = 'hist-item';
+    const qLabel = document.createElement('b');
+    qLabel.textContent = 'Q:';
+    item.appendChild(qLabel);
+    item.appendChild(document.createTextNode(' ' + (h.question || '')));
+    const when = h.created_at || h.updated_at;
+    if (when) {
+      const time = document.createElement('span');
+      time.className = 'hist-time';
+      time.textContent = fmtTime(when);
+      item.appendChild(time);
+    }
+    item.appendChild(document.createElement('br'));
+    const aLabel = document.createElement('b');
+    aLabel.textContent = 'A:';
+    item.appendChild(aLabel);
+    item.appendChild(document.createTextNode(' ' + (h.answer || '').slice(0, 100)));
+    el.appendChild(item);
+  });
 }
 loadHistory();
+loadStats();
 </script>
 </body>
 </html>
