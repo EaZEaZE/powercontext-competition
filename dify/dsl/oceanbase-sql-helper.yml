@@ -5,297 +5,283 @@ app:
   mode: workflow
   name: OceanBase SQL Helper
   use_icon_as_answer_icon: false
+dependencies: []
 kind: app
-version: 0.1.5
+version: 0.5.0
 workflow:
   conversation_variables: []
   environment_variables:
-    - description: seekdb 执行桥接服务地址，Dify 与 seekdb 同机时可用 http://host.docker.internal:18080
-      id: env-seekdb-bridge-url
-      name: SEEKDB_BRIDGE_URL
-      selector:
-        - env
-        - SEEKDB_BRIDGE_URL
-      value: http://host.docker.internal:18080
-      value_type: string
+  - id: env-seekdb-bridge-url
+    name: SEEKDB_BRIDGE_URL
+    value: http://127.0.0.1:18080
+    value_type: string
+    description: seekdb 执行桥接服务地址，源码部署且同机时使用 http://127.0.0.1:18080
   features:
-    file_upload:
-      allowed_file_extensions:
-        - .JPG
-        - .JPEG
-        - .PNG
-        - .GIF
-        - .WEBP
-        - .SVG
-      allowed_file_types:
-        - image
-      allowed_file_upload_methods:
-        - local_file
-        - remote_url
-      enabled: false
-      fileUploadConfig:
-        audio_file_size_limit: 50
-        batch_count_limit: 5
-        file_size_limit: 15
-        image_file_size_limit: 10
-        video_file_size_limit: 100
-        workflow_file_upload_limit: 10
-      number_limits: 3
     opening_statement: ''
-    retriever_resource:
-      enabled: false
-    sensitive_word_avoidance:
-      enabled: false
-    speech_to_text:
-      enabled: false
+    suggested_questions: []
     suggested_questions_after_answer:
       enabled: false
     text_to_speech:
       enabled: false
       language: ''
       voice: ''
+    speech_to_text:
+      enabled: false
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    file_upload:
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      enabled: false
+      allowed_file_types:
+      - image
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      number_limits: 3
+      fileUploadConfig:
+        file_size_limit: 15
+        batch_count_limit: 5
+        image_file_size_limit: 10
+        video_file_size_limit: 100
+        audio_file_size_limit: 50
+        workflow_file_upload_limit: 10
   graph:
-    edges:
-      - data:
-          isInIteration: false
-          isInLoop: false
-          sourceType: start
-          targetType: code
-        id: edge-start-code
-        source: start
-        sourceHandle: source
-        target: code_sql
-        targetHandle: target
-        type: custom
-        zIndex: 0
-      - data:
-          isInIteration: false
-          isInLoop: false
-          sourceType: code
-          targetType: http-request
-        id: edge-code-http
-        source: code_sql
-        sourceHandle: source
-        target: http_seekdb
-        targetHandle: target
-        type: custom
-        zIndex: 0
-      - data:
-          isInIteration: false
-          isInLoop: false
-          sourceType: http-request
-          targetType: end
-        id: edge-http-end
-        source: http_seekdb
-        sourceHandle: source
-        target: end
-        targetHandle: target
-        type: custom
-        zIndex: 0
     nodes:
-      - data:
-          desc: 接收自然语言需求，可指定表名、维度、返回条数
-          selected: false
-          title: 开始
-          type: start
-          variables:
-            - label: 需求描述
-              max_length: 2000
-              options: []
-              required: false
-              type: paragraph
-              variable: query
-            - label: 表名
-              max_length: 128
-              options: []
-              required: false
-              type: text-input
-              variable: table
-            - label: 向量维度
-              max_length: 16
-              options: []
-              required: false
-              type: text-input
-              variable: dim
-            - label: 返回条数
-              max_length: 16
-              options: []
-              required: false
-              type: text-input
-              variable: topk
-        height: 194
-        id: start
-        position:
-          x: 80
-          y: 262
-        positionAbsolute:
-          x: 80
-          y: 262
+    - data:
+        desc: 接收自然语言需求，可指定表名、维度、返回条数
         selected: false
-        sourcePosition: right
-        targetPosition: left
-        type: custom
-        width: 244
-      - data:
-          code: |
-            def main(query: str = "", table: str = "", dim: str = "", topk: str = "") -> dict:
-                q = (query or "").lower()
-                t = (table or "").strip() or "items"
-                d = (dim or "").strip() or "128"
-                k = (topk or "").strip() or "10"
-                if not d.isdigit():
-                    d = "128"
-                if not k.isdigit():
-                    k = "10"
-
-                if "索引" in q or "index" in q:
-                    sql = (
-                        "CREATE VECTOR INDEX idx_%s_v ON %s(v) "
-                        "WITH (distance=l2, type=hnsw, m=16, ef_construction=200, ef_search=64);"
-                    ) % (t, t)
-                    kind = "create_vector_index"
-                elif "建表" in q or "向量表" in q or "建个" in q or "创建" in q or "create" in q:
-                    sql = "CREATE TABLE %s (id BIGINT PRIMARY KEY, v VECTOR(%s));" % (t, d)
-                    kind = "create_table"
-                elif "多少" in q or "count" in q or "统计" in q:
-                    sql = "SELECT COUNT(*) AS total FROM %s;" % t
-                    kind = "count"
-                elif "范围" in q or "where" in q:
-                    sql = "SELECT * FROM %s WHERE id > 100 AND id < 1000 LIMIT 100;" % t
-                    kind = "range_query"
-                else:
-                    sql = (
-                        "SELECT id, l2_distance(v, query_vector) AS distance FROM %s "
-                        "ORDER BY l2_distance(v, query_vector) APPROXIMATE LIMIT %s;"
-                    ) % (t, k)
-                    kind = "vector_search"
-                return {"sql": sql, "kind": kind, "table": t}
-          code_language: python3
-          desc: 按需求关键词生成 seekdb SQL（建表 / 向量索引 / 相似度检索 / 统计 / 范围查询）
-          outputs:
-            kind:
-              children: null
-              type: string
-            sql:
-              children: null
-              type: string
-            table:
-              children: null
-              type: string
-          selected: false
-          title: 生成 SQL
-          type: code
-          variables:
-            - value_selector:
-                - start
-                - query
-              variable: query
-            - value_selector:
-                - start
-                - table
-              variable: table
-            - value_selector:
-                - start
-                - dim
-              variable: dim
-            - value_selector:
-                - start
-                - topk
-              variable: topk
-        height: 80
-        id: code_sql
-        position:
-          x: 404
-          y: 262
-        positionAbsolute:
-          x: 404
-          y: 262
+        title: 开始
+        type: start
+        variables:
+        - label: 需求描述
+          max_length: 2000
+          options: []
+          required: false
+          type: paragraph
+          variable: query
+        - label: 表名
+          max_length: 128
+          options: []
+          required: false
+          type: text-input
+          variable: table
+        - label: 向量维度
+          max_length: 16
+          options: []
+          required: false
+          type: text-input
+          variable: dim
+        - label: 返回条数
+          max_length: 16
+          options: []
+          required: false
+          type: text-input
+          variable: topk
+      height: 231
+      id: start
+      position:
+        x: 80
+        y: 262
+      positionAbsolute:
+        x: 80
+        y: 262
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "def main(query: str = \"\", table: str = \"\", dim: str = \"\", topk: str = \"\") -> dict:\n    q = (query\
+          \ or \"\").lower()\n    t = (table or \"\").strip() or \"items\"\n    d = (dim or \"\").strip() or \"128\"\n   \
+          \ k = (topk or \"\").strip() or \"10\"\n    if not d.isdigit():\n        d = \"128\"\n    if not k.isdigit():\n\
+          \        k = \"10\"\n\n    if \"索引\" in q or \"index\" in q:\n        sql = (\n            \"CREATE VECTOR INDEX\
+          \ idx_%s_v ON %s(v) \"\n            \"WITH (distance=l2, type=hnsw, m=16, ef_construction=200, ef_search=64);\"\n\
+          \        ) % (t, t)\n        kind = \"create_vector_index\"\n    elif \"建表\" in q or \"向量表\" in q or \"建个\" in q\
+          \ or \"创建\" in q or \"create\" in q:\n        sql = \"CREATE TABLE %s (id BIGINT PRIMARY KEY, v VECTOR(%s));\" %\
+          \ (t, d)\n        kind = \"create_table\"\n    elif \"多少\" in q or \"count\" in q or \"统计\" in q:\n        sql =\
+          \ \"SELECT COUNT(*) AS total FROM %s;\" % t\n        kind = \"count\"\n    elif \"范围\" in q or \"where\" in q:\n\
+          \        sql = \"SELECT * FROM %s WHERE id > 100 AND id < 1000 LIMIT 100;\" % t\n        kind = \"range_query\"\n\
+          \    else:\n        query_vector = \"[\" + \",\".join(\"1\" if i == 0 else \"0\" for i in range(int(d))) + \"]\"\
+          \n        sql = (\n            \"SELECT id, l2_distance(v, '%s') AS distance FROM %s \"\n            \"ORDER BY\
+          \ l2_distance(v, '%s') APPROXIMATE LIMIT %s;\"\n        ) % (query_vector, t, query_vector, k)\n        kind = \"\
+          vector_search\"\n    return {\"sql\": sql, \"kind\": kind, \"table\": t}\n"
+        code_language: python3
+        desc: 按需求关键词生成 seekdb SQL（建表 / 向量索引 / 相似度检索 / 统计 / 范围查询）
+        outputs:
+          kind:
+            children: null
+            type: string
+          sql:
+            children: null
+            type: string
+          table:
+            children: null
+            type: string
         selected: false
-        sourcePosition: right
-        targetPosition: left
-        type: custom
-        width: 244
-      - data:
-          authorization:
-            config: null
-            type: no-auth
-          body:
-            data:
-              - key: sql
-                type: text
-                value: '{{#code_sql.sql#}}'
-            type: json
-          default_value:
-            - key: body
-              type: string
-              value: '{"ok":false,"message":"seekdb 执行服务未连接，已跳过实际执行，仅返回生成的 SQL"}'
-            - key: status_code
-              type: number
-              value: 0
-          desc: 把生成的 SQL 发到 seekdb 桥接服务执行，不可用时降级为仅展示 SQL
-          error_strategy: default-value
-          headers: 'Content-Type:application/json'
-          method: post
-          params: ''
-          retry_config:
-            max_retries: 0
-            retry_enabled: false
-            retry_interval: 1000
-          selected: false
-          ssl_verify: true
-          timeout:
-            max_connect_timeout: 0
-            max_read_timeout: 0
-            max_write_timeout: 0
-          title: seekdb 执行
-          type: http-request
-          url: '{{#env.SEEKDB_BRIDGE_URL#}}/sql'
-          variables: []
-        height: 98
-        id: http_seekdb
-        position:
-          x: 728
-          y: 262
-        positionAbsolute:
-          x: 728
-          y: 262
+        title: 生成 SQL
+        type: code
+        variables:
+        - value_selector:
+          - start
+          - query
+          variable: query
+        - value_selector:
+          - start
+          - table
+          variable: table
+        - value_selector:
+          - start
+          - dim
+          variable: dim
+        - value_selector:
+          - start
+          - topk
+          variable: topk
+      height: 112
+      id: code_sql
+      position:
+        x: 404
+        y: 262
+      positionAbsolute:
+        x: 404
+        y: 262
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - key: ''
+            type: text
+            value: '{"sql":"{{#code_sql.sql#}}"}'
+          type: json
+        default_value:
+        - key: body
+          type: string
+          value: '{"ok":false,"message":"seekdb 执行服务未连接，已跳过实际执行，仅返回生成的 SQL"}'
+        - key: status_code
+          type: number
+          value: 0
+        desc: 把生成的 SQL 发到 seekdb 桥接服务执行，不可用时降级为仅展示 SQL
+        error_strategy: default-value
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 0
+          retry_enabled: false
+          retry_interval: 1000
         selected: false
-        sourcePosition: right
-        targetPosition: left
-        type: custom
-        width: 244
-      - data:
-          desc: 输出 SQL 语句与 seekdb 执行结果
-          outputs:
-            - value_selector:
-                - code_sql
-                - sql
-              variable: sql
-            - value_selector:
-                - code_sql
-                - kind
-              variable: kind
-            - value_selector:
-                - http_seekdb
-                - body
-              variable: seekdb_result
-          selected: false
-          title: 结果输出
-          type: end
-          variables: []
-        height: 120
-        id: end
-        position:
-          x: 1052
-          y: 262
-        positionAbsolute:
-          x: 1052
-          y: 262
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 10
+          max_read_timeout: 30
+          max_write_timeout: 30
+        title: seekdb 执行
+        type: http-request
+        url: '{{#env.SEEKDB_BRIDGE_URL#}}/sql'
+        variables: []
+      height: 192
+      id: http_seekdb
+      position:
+        x: 728
+        y: 262
+      positionAbsolute:
+        x: 728
+        y: 262
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        desc: 输出 SQL 语句与 seekdb 执行结果
+        outputs:
+        - value_selector:
+          - code_sql
+          - sql
+          variable: sql
+        - value_selector:
+          - code_sql
+          - kind
+          variable: kind
+        - value_selector:
+          - http_seekdb
+          - body
+          variable: seekdb_result
         selected: false
-        sourcePosition: right
-        targetPosition: left
-        type: custom
-        width: 244
+        title: 结果输出
+        type: end
+        variables: []
+      height: 171
+      id: end
+      position:
+        x: 1052
+        y: 262
+      positionAbsolute:
+        x: 1052
+        y: 262
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: edge-start-code
+      source: start
+      sourceHandle: source
+      target: code_sql
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: edge-code-http
+      source: code_sql
+      sourceHandle: source
+      target: http_seekdb
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: end
+      id: edge-http-end
+      source: http_seekdb
+      sourceHandle: source
+      target: end
+      targetHandle: target
+      type: custom
+      zIndex: 0
     viewport:
       x: 0
       y: 0

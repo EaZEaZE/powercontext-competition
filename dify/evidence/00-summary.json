@@ -1,0 +1,49 @@
+{
+  "app_id": "156f12b5-ab3c-4e66-b57f-d18a51261ad3",
+  "import": {
+    "id": "742a6247-15c6-46a3-a41e-f25d8e5aaeef",
+    "status": "completed",
+    "app_id": "156f12b5-ab3c-4e66-b57f-d18a51261ad3",
+    "app_mode": "workflow",
+    "current_dsl_version": "0.5.0",
+    "imported_dsl_version": "0.5.0",
+    "error": ""
+  },
+  "runs": [
+    {
+      "query": "帮我建个128维向量表",
+      "http": 200,
+      "status": "succeeded",
+      "sql": "CREATE TABLE items (id BIGINT PRIMARY KEY, v VECTOR(128));",
+      "seekdb_result": "{\"ok\":true,\"mode\":\"embedded\",\"columns\":[],\"rows\":[],\"row_count\":0}"
+    },
+    {
+      "query": "创建 HNSW 向量索引，distance 用 l2",
+      "http": 200,
+      "status": "succeeded",
+      "sql": "CREATE VECTOR INDEX idx_items_v ON items(v) WITH (distance=l2, type=hnsw, m=16, ef_construction=200, ef_search=64);",
+      "seekdb_result": "{\"ok\":true,\"mode\":\"embedded\",\"columns\":[],\"rows\":[],\"row_count\":0}"
+    },
+    {
+      "query": "统计表里有多少条记录",
+      "http": 200,
+      "status": "succeeded",
+      "sql": "SELECT COUNT(*) AS total FROM items;",
+      "seekdb_result": "{\"ok\":true,\"mode\":\"embedded\",\"columns\":[],\"rows\":[[\"3\"]],\"row_count\":1}"
+    },
+    {
+      "query": "查询最相似的10条向量",
+      "http": 200,
+      "status": "succeeded",
+      "sql": "SELECT id, l2_distance(v, '[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]') AS distance FROM items ORDER BY l2_distance(v, '[1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]') APPROXIMATE LIMIT 10;",
+      "seekdb_result": "{\"ok\":true,\"mode\":\"embedded\",\"columns\":[],\"rows\":[[\"1\",\"0.0\"],[\"3\",\"0.14142137441313676\"],[\"2\",\"1.4142135623730951\"]],\"row_count\":3}"
+    },
+    {
+      "query": "做范围查询 where id > 100",
+      "http": 200,
+      "status": "succeeded",
+      "sql": "SELECT * FROM items WHERE id > 100 AND id < 1000 LIMIT 100;",
+      "seekdb_result": "{\"ok\":true,\"mode\":\"embedded\",\"columns\":[],\"rows\":[],\"row_count\":0}"
+    }
+  ]
+}
